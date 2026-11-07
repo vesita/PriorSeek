@@ -1,0 +1,17 @@
+[package]
+name = "sl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "search-lab 核心契约：数据类型、规范格式 IO、指标口径、适配器 trait、运行记录"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

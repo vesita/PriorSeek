@@ -1,0 +1,18 @@
+[package]
+name = "sl-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "search-lab 命令行：数据集校验、跑对比、渲染报告"
+
+[[bin]]
+name = "sl"
+path = "src/main.rs"
+
+[dependencies]
+sl-core = { path = "../sl-core" }
+sl-adapters = { path = "../sl-adapters" }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+chrono.workspace = true

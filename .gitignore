@@ -1,0 +1,16 @@
+# 构建产物
+/target
+
+# 规范数据集（由 tools/datasets/build.py 生成，体积大，不进 git）
+/data/*/
+!/data/.gitkeep
+
+# 运行记录（体积随查询数增长；报告里的结论进 docs 或 README）
+/results/*/
+!/results/.gitkeep
+
+# Python 工具的本地环境
+/tools/datasets/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

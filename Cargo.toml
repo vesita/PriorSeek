@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sl-core",
+    "crates/sl-adapters",
+    "crates/sl-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/vesita/search-lab"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+jieba-rs = "0.11"
+ureq = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tempfile = "3"
+rayon = "1"
