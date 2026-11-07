@@ -1,0 +1,14 @@
+[project]
+name = "search-lab-datasets"
+version = "0.1.0"
+description = "search-lab 规范数据集构建器（下载 / 解压 / 裁剪 / 转换 + manifest）"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.31"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"

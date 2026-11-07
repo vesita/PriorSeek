@@ -1,0 +1,6 @@
+# 下载缓存与本地环境不进 git
+.cache/
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc

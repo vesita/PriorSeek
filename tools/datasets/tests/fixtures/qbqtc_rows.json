@@ -1,0 +1,9 @@
+[
+  {"sentence1": "苹果手机多少钱", "sentence2": "苹果手机价格", "score": 2},
+  {"sentence1": "苹果手机多少钱", "sentence2": "苹果手机价格", "score": 1},
+  {"sentence1": "苹果手机多少钱", "sentence2": "安卓手机价格", "score": 0},
+  {"sentence1": "如何学习Rust", "sentence2": "Rust 入门教程", "score": 1},
+  {"sentence1": "如何学习Rust", "sentence2": "Rust 入门教程", "score": 2},
+  {"sentence1": "", "sentence2": "孤文档", "score": 0},
+  {"sentence1": "空标题", "sentence2": "  ", "score": 1}
+]

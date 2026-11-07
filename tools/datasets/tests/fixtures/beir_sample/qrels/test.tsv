@@ -1,0 +1,8 @@
+query-id	corpus-id	score
+q1	d1	1
+q1	d2	1
+q2	d3	1
+q2	missing-doc	1
+q3	d1	1
+q3	d1	1
+qX	d4	1

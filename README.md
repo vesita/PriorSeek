@@ -55,10 +55,13 @@ results/        运行记录（不进 git）
 
 | 数据集 | 族 | 规模 | 状态 |
 |---|---|---|---|
-| scifact | ranking | 5,183 文档 / 300 查询 | 待构建校验 |
-| arguana | ranking | 8,674 文档 / 1,406 查询 | 待构建校验 |
-| nq-sub | ranking | 50,000 文档池（seed 固定） | 待构建校验 |
-| qbqtc | ranking | 5,000 title 语料（中文配对转检索） | 待构建校验 |
+| scifact | ranking | 5,183 文档 / 1,109 查询（300 计分） | 已构建校验；已跑一轮对比（见 `docs/RESULTS.md`） |
+| arguana | ranking | 8,674 文档 / 1,406 查询（1,401 计分） | 已构建校验；评测待跑 |
+| qbqtc | ranking | 4,889 title / 4,924 查询（3,749 计分，中文） | 已构建校验；评测待跑 |
+| nq-sub | ranking | 50,000 文档池 / 3,452 查询（seed 固定） | 已构建校验；评测待跑 |
+
+数据来源地址、许可、子集口径与重建后的指纹基准：见 [`docs/DATASETS.md`](docs/DATASETS.md)。
+已有结果：见 [`docs/RESULTS.md`](docs/RESULTS.md)（目前只有 scifact 一轮，单次运行，不作强弱结论）。
 
 适配器：`bm25`、`faq-char`/`faq-bigram`/`faq-word`/`faq-hybrid`/`faq-bm25`（移植自
 `~/coding/hub/faq-search`）、`rs`（`~/coding/my/relation-search` 的 Rust BM25+ast-grep 代码检索）。

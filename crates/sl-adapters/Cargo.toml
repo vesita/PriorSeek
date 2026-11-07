@@ -1,0 +1,15 @@
+[package]
+name = "sl-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "search-lab 适配器：把各个搜索算法包装成统一 Adapter（BM25 / FAQ 五方案 / relation-search）"
+
+[dependencies]
+sl-core = { path = "../sl-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+jieba-rs.workspace = true

@@ -91,11 +91,11 @@ fn run_produces_comparable_metrics_and_report() {
     let loaded = load_dataset(tmp.path()).unwrap();
     loaded.verify_strict().unwrap();
 
-    let mut good = KeywordAdapter::new(
+    let good = KeywordAdapter::new(
         "good",
         vec![("参数", vec!["d1", "d3"]), ("报警", vec!["d2"])],
     );
-    let mut bad = KeywordAdapter::new(
+    let bad = KeywordAdapter::new(
         "bad",
         vec![("参数", vec!["d3", "d1"]), ("报警", vec!["d1"])],
     );
@@ -159,10 +159,10 @@ fn warmup_does_not_change_metrics_only_latency() {
     write_dataset(&dataset, tmp.path(), dataset.manifest.clone()).unwrap();
     let loaded = load_dataset(tmp.path()).unwrap();
 
-    let mut without = KeywordAdapter::new("a", vec![("参数", vec!["d1"]), ("报警", vec!["d2"])]);
+    let without = KeywordAdapter::new("a", vec![("参数", vec!["d1"]), ("报警", vec!["d2"])]);
     let outcome_without = run_dataset(&loaded.dataset, &mut [Box::new(without)], 10, 0).unwrap();
 
-    let mut with = KeywordAdapter::new("a", vec![("参数", vec!["d1"]), ("报警", vec!["d2"])]);
+    let with = KeywordAdapter::new("a", vec![("参数", vec!["d1"]), ("报警", vec!["d2"])]);
     let outcome_with = run_dataset(&loaded.dataset, &mut [Box::new(with)], 10, 2).unwrap();
 
     assert_eq!(outcome_without[0].metrics, outcome_with[0].metrics);
