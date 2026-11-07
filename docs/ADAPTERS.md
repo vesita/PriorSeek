@@ -19,7 +19,7 @@ bm25  faq-char  faq-bigram  faq-word  faq-hybrid  faq-bm25  rs
 | `faq-word` | `faq-scheme` | 同上 | jieba 词覆盖率 |
 | `faq-hybrid` | `faq-scheme` | 同上 | 词 2x + 双字 1x + 单字 0.3x |
 | `faq-bm25` | `faq-scheme` | 同上 | 双字 BM25（IDF + 长度归一） |
-| `rs` | `relation-search` | `crates/sl-adapters/src/rs.rs` | `~/coding/my/relation-search`（Rust BM25 + 代码感知分词 + 内嵌 ast-grep），**子进程**接入 |
+| `rs` | `relation-search` | `crates/sl-adapters/src/rs.rs` | `https://github.com/vesita/relation-search`（本机检出 `~/coding/my/relation-search`；Rust BM25 + 代码感知分词 + 内嵌 ast-grep），**子进程**接入 |
 
 ## 移植保真度（faq-*）
 
@@ -29,6 +29,9 @@ bm25  faq-char  faq-bigram  faq-word  faq-hybrid  faq-bm25  rs
 - 5 个方案 × 9 条查询的 **doc id 排序序列与 Python 完全一致**（分数按 1e-9 相对误差）；
 - jieba-rs 切词与 Python jieba 切词一致；
 - 三条兜底路径（单字查询→char、整库无 bigram 命中→整库 char、word 分词为空→char）确实被覆盖。
+
+上游 `~/coding/hub/faq-search` 在本机**没有 git 远端**，所以移植结果与 `tests/fixtures/faq_parity.json`
+随本仓提交：换机器不装那个 Python 包也能跑 parity 测试（重跑 fixture 生成脚本时才需要它）。
 
 **与原包的差异**（写在 `faq.rs` 模块文档里）：查询侧特征只构造一次（原包每篇文档都重建查询特征），
 语义与指标逐位不变，只是更快。faq 方案最初为中文 FAQ 设计，在英文语料上退化是预期行为，
