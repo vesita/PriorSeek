@@ -4,8 +4,15 @@
 产出可横比的效果与成本表。
 
 - 对比口径（唯一事实源）：[`docs/STANDARD.md`](docs/STANDARD.md)
+- 内核设计（认知 token / token 关联 / 搜索权重，GPU 训练 + CPU 运行）：[`docs/KERNEL.md`](docs/KERNEL.md)
 - 数据集口径与构建：[`docs/DATASETS.md`](docs/DATASETS.md)
 - 适配器清单与来源：[`docs/ADAPTERS.md`](docs/ADAPTERS.md)
+
+## 方向：外壳明确，内核深度学习
+
+外壳（规范数据、指标口径、runner、报告、公平性）固定不变；内核（token 化、关联结构、搜索权重）
+可以换成深度学习实现——但只能体现在**离线工件**里，运行时必须非 GPU 可跑。
+内核设计、工件契约与里程碑见 [`docs/KERNEL.md`](docs/KERNEL.md)。
 
 ## 它解决什么问题
 
