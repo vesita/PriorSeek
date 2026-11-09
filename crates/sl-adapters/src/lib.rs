@@ -10,6 +10,7 @@
 //! | `bm25` | 自实现 Okapi BM25（k1=1.5, b=0.75，字母数字词项 + CJK jieba 分词） | [`bm25`] |
 //! | `faq-char` / `faq-bigram` / `faq-word` / `faq-hybrid` / `faq-bm25` | 中文 FAQ 五方案（移植 faq-search） | [`faq`] |
 //! | `rs` | relation-search（Rust BM25 + ast-grep），子进程接入 | [`rs`] |
+//! | `seq` | token 时序相关度内核（BM25 主体 + 内核工件的时序边权） | [`seq`] |
 //!
 //! 共享的清洗/切分点在 [`tokenize`]；中文语料相关的适用范围写在 [`faq`] 的模块文档里。
 
@@ -18,11 +19,13 @@ use anyhow::{bail, Result};
 mod bm25;
 mod faq;
 mod rs;
+mod seq;
 pub mod tokenize;
 
 pub use bm25::Bm25Adapter;
 pub use faq::{FaqAdapter, Scheme};
 pub use rs::RelationSearchAdapter;
+pub use seq::SeqAdapter;
 
 /// 当前可用的适配器名（进 `sl run --adapters` 的取值），顺序即展示顺序。
 pub fn names() -> Vec<&'static str> {
@@ -34,6 +37,7 @@ pub fn names() -> Vec<&'static str> {
         "faq-hybrid",
         "faq-bm25",
         "rs",
+        "seq",
     ]
 }
 
@@ -45,6 +49,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
     let adapter: Box<dyn sl_core::Adapter> = match name {
         "bm25" => Box::new(Bm25Adapter::new()),
         "rs" => Box::new(RelationSearchAdapter::new()?),
+        "seq" => Box::new(SeqAdapter::new()?),
         other => match Scheme::from_name(other) {
             Some(scheme) => Box::new(FaqAdapter::new(scheme)),
             None => bail!("未知适配器 {other:?}；当前可用：{}", names().join(", ")),
@@ -58,7 +63,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_lists_all_seven_names_without_duplicates() {
+    fn registry_lists_all_names_without_duplicates() {
         assert_eq!(
             names(),
             vec![
@@ -68,7 +73,8 @@ mod tests {
                 "faq-word",
                 "faq-hybrid",
                 "faq-bm25",
-                "rs"
+                "rs",
+                "seq"
             ]
         );
         let unique: std::collections::BTreeSet<&str> = names().into_iter().collect();

@@ -65,6 +65,20 @@ enum Command {
         /// 运行目录（含 run.json）
         run_dir: PathBuf,
     },
+    /// 单查询调试：构造指定适配器，打印一条查询的 top-k（用于与参考实现对拍）
+    Probe {
+        #[arg(long)]
+        dataset: String,
+        #[arg(long)]
+        adapter: String,
+        #[arg(long)]
+        query: String,
+        #[arg(long, default_value_t = 10)]
+        k: usize,
+        /// 把语料索引 / 查询打印成 JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// 内核工件：复核某次运行记录的工件哈希（换机器 / 长期归档后确认工件没被换掉）
     Artifact {
         #[command(subcommand)]
@@ -121,10 +135,48 @@ fn real_main() -> Result<()> {
             run_one(&cli.data_dir, &cli.results_dir, &dataset, &adapters, k, warmup, label, allow_dirty)
         }
         Command::Report { run_dir } => rerender(&run_dir),
+        Command::Probe { dataset, adapter, query, k, json } => {
+            probe(&cli.data_dir, &dataset, &adapter, &query, k, json)
+        }
         Command::Artifact { command } => match command {
             ArtifactCommand::Verify { run_dir } => verify_artifacts(&run_dir),
         },
     }
+}
+
+fn probe(
+    data_dir: &Path,
+    dataset_name: &str,
+    adapter_name: &str,
+    query: &str,
+    k: usize,
+    json: bool,
+) -> Result<()> {
+    let loaded = canonical::load_dataset(&data_dir.join(dataset_name))?;
+    if !loaded.pruned.is_clean() {
+        eprintln!("[sl] 警告：qrels 有悬挂条目，已剔除");
+    }
+    std::env::set_var("SL_DATA_DIR", data_dir);
+    std::env::set_var("SL_DATASET", dataset_name);
+    let dataset = loaded.dataset;
+    let mut adapter = sl_adapters::build(adapter_name)?;
+    adapter.index(&dataset.docs)?;
+    let hits = adapter.search(query, k)?;
+    let info = adapter.info();
+    if json {
+        let payload = serde_json::json!({
+            "dataset": dataset.name,
+            "adapter": info.name,
+            "query": query,
+            "hits": hits.iter().map(|(id, score)| serde_json::json!({"id": id, "score": score})).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        for (rank, (id, score)) in hits.iter().enumerate() {
+            println!("{}\t{}\t{:.6}", rank + 1, id, score);
+        }
+    }
+    Ok(())
 }
 
 fn verify_artifacts(run_dir: &Path) -> Result<()> {

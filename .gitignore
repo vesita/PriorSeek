@@ -10,7 +10,8 @@
 !/results/.gitkeep
 
 # Python 工具的本地环境
-/tools/datasets/.venv/
+/tools/*/.venv/
+/tools/*/.cache/
 __pycache__/
 *.pyc
 .pytest_cache/
