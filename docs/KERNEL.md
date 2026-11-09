@@ -5,12 +5,25 @@
 > 换内核不改变任何口径；内核负责「把查询和文档变成 token、建立关联、产出搜索权重」，
 > 训练可以用 GPU，**运行时必须能在无 GPU 环境跑**。
 
-## 1. 外壳与内核的分界
+## 1. 三层：实验台 / 外壳（检索管线） / 内核（特征提供者）
 
-| | 外壳（已存在，改动要过 STANDARD） | 内核（可换、可训练） |
-|---|---|---|
-| 负责 | 规范数据与指纹、指标口径、同轮同题、失败即报错、成本分列、工件登记 | token 化、关联结构、搜索权重、编码/训练 |
-| 不允许 | 被内核反向影响（内核不能改指标、不能看 qrels） | 改变同轮可比性；把训练数据混进评测；运行时依赖 GPU |
+```text
+┌─ 实验台（评测标准，docs/STANDARD.md）───────────────┐
+│ 规范数据+指纹 · 指标口径 · 同轮同题 · 成本分列 · 报告 │
+│  └─ 外壳（检索管线，可设计算法）─────────────────┐   │
+│     token 化 → 基本特征（tf/df/长度/窗口）         │   │
+│              + 内核特征（先验权重/时序相关/关联/向量）│
+│              → 打分融合 → 索引与检索               │   │
+│     └─ 内核（离线训练的特征提供者）──────────────┐  │   │
+│        语料统计 / GPU 训练 → 工件（可审计、CPU 运行）│  │   │
+└──────────────────────────────────────────────────┘
+```
+
+- **内核**只提供「特征」：token 的先验权重、token 间的时序/关联强度、概念 id、向量等，
+  以离线工件形式落地；它不决定怎么融合、怎么检索。
+- **外壳**是检索管线：token 化 → 取基本特征 + 内核特征 → 设计打分融合 → 建索引/检索。
+  同一份内核特征可以被不同的外壳算法消费，互换外壳是**可比**的（同数据同 k）。
+- **实验台**是外层评测标准：数据契约、指标、runner、报告、公平性；内核与外壳都不许改它。
 
 **一条推论**：内核的一切「学习」都必须落在**离线工件**上，运行时只做查表 / 稀疏矩阵运算。
 这既满足「运行时非 GPU」，也让内核可审计（工件带哈希、来源、训练数据指纹）。
@@ -133,3 +146,111 @@ KernelArtifact {
 - **离线成本**：训练/编码时长、GPU 型号、语料规模；工件大小；
 - **在线成本**：索引构建（含工件加载）、单查询延迟（**CPU**，p50/p95）、内存峰值；
 - 报告里离线与在线成本分列，不合成单一分数；若某内核只能在 GPU 跑，直接判不合规（运行时要 CPU）。
+
+## 8. M1 实现规格：`seq` 内核（token 时序相关度 v0）
+
+> 定位（暂定）：内核先只做「**token 时序相关度**」——查询 token 之间的顺序/邻接关系，如何影响
+> 每个 token 的检索权重与文档打分。结构上只用「链」（`seq` 边），树/图留到后续里程碑。
+> v0 的权重来自**语料内统计**（PPMI，无监督、不看 qrels）；M4 再把权重换成 GPU 学习/蒸馏的版本，
+> 工件格式与运行时打分不变 => 可以逐位对拍「统计先验 vs 学习先验」。
+
+### 8.1 打分定义（v0）
+
+```text
+tokenize(q) -> [t1..tn]                      # 与现有适配器同一分词器
+w0(t)        = idf(t)                        # 来自工件（语料内统计）
+unigram:  s_uni(d) = Σ_t w0(t) · tf_norm(t, d)        # tf_norm 用 BM25 饱和 + 长度归一（k1=1.5, b=0.75）
+seq 对:   P = {(q_i, q_{i+1})} ∪ {(q_i, q_{i+2})}      # 相邻 + 隔一
+时序分:   s_seq(d) = Σ_{(a,b) ∈ P, e(a,b) > 0} e(a,b) · sat(c_d(a, b, W))
+          e(a,b)   = 工件里的 PPMI 转移权（order=1 或 2），查不到记 0
+          c_d(a,b,W) = 文档里满足 pos_a < pos_b 且 pos_b - pos_a ≤ W 的匹配次数
+          sat(c)   = 1 + ln(c)  (c ≥ 1)，c 计入上限 3
+总分:     score(q,d) = s_uni(d) + λ_seq · s_seq(d)
+```
+
+消融开关（都进 `AdapterInfo.config`）：
+
+PPMI 权重（`method=ppmi_topk`）：
+
+```text
+c(a,b)    = 文档内 order 阶（1/2）有序共现计数
+pmi(a,b)  = ln( c(a,b)^0.75 · N_pair / ( c(a)^0.75 · c(b)^0.75 ) )
+weight    = max(0, pmi(a,b) − ln(ppmi_shift))
+筛选      = c(a,b) ≥ min_df，且每个 src 只保留 weight 最大的 top_k 条出边
+```
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `lambda_seq` | 0.5 | 时序分权重（0 = 退回纯 BM25） |
+| `window` | 8 | 有序匹配的最大 token 距离 |
+| `orders` | [1,2] | 用哪些阶的转移边（`[1]` = 只相邻） |
+| `ordered` | true | `false` 时改为无序邻近（同样窗口），作为「顺序是否重要」的对照 |
+| `max_matches` | 3 | `c` 的截断，避免长文档靠重复刷分 |
+
+### 8.2 工件格式（`data/<name>/artifacts/seq-v0/`）
+
+```text
+manifest.json    元数据（见下）
+seq.bin          词表 + idf + 边表（小端）
+docs.txt         文档 id 列表（一行一个，顺序与 doc_tokens.bin 一致）
+doc_tokens.bin   每篇文档的 token id 序列（由构建器用 Python 分词器切好，避免两端分词差异）
+```
+
+> **为什么要 `doc_tokens.bin`**：词表由构建器（Python）产，若让 Rust 侧再切一次文档，
+> Python jieba 与 jieba-rs 的极少数切词差异会让文档 token 与词表错位（OOV、位置偏移）。
+> 把文档侧 token 序列固化进工件，两端只共享同一份结果；查询侧仍由 Rust 现切（差异只会丢个别
+> OOV 查询词，可接受且有测试覆盖）。
+
+`manifest.json` 字段（必须能被 `KernelArtifact` 契约消费）：
+
+```json
+{
+  "id": "seq-v0",
+  "kind": "seq_graph",
+  "method": "ppmi_topk",
+  "weights_origin": "corpus_ppmi",
+  "source_corpus": {"dataset": "<name>", "fingerprint": "<数据集 manifest 指纹>"},
+  "params": {"orders": [1, 2], "top_k": 20, "window": 8, "min_df": 2, "ppmi_shift": 5, "smoothing": 0.75},
+  "counts": {"vocab": 0, "edges": 0},
+  "files": {"seq.bin": {"sha256": "<hex>", "bytes": 0}},
+  "runtime": {"device": "cpu", "precision": "f32"},
+  "trained_on": "语料内统计（无监督，未使用 qrels）",
+  "contamination": "无预训练模型参与，无外部语料",
+  "license": "由本仓从数据集语料构建",
+  "notes": ""
+}
+```
+
+`seq.bin`（小端，无对齐填充）：
+
+```text
+seq.bin（小端）：
+  magic     8 字节  b"SLSEQv1\0"
+  vocab     u32 n，随后 n 条：u16 len + UTF-8 bytes（按 token 字典序升序存，便于二分查找）
+  idf       n × f32
+  edges     u32 m，随后 m 条：u32 src, u32 dst, u8 order, f32 weight
+            边按 (src, dst, order) 升序；src/dst 是词表下标；order ∈ {1,2}
+
+doc_tokens.bin（小端）：
+  magic     8 字节  b"SLDOCv1\0"
+  docs      u32 d
+  每篇：u32 len，随后 len 个 u32 token id（按文档内出现顺序，长度 = 该文档 token 数）
+```
+
+`docs.txt` 与 `doc_tokens.bin` 的文档必须一一对应且顺序一致；适配器加载时必须校验：
+文档数一致、id 集合与数据集语料一致（不一致直接报错，不做静默对齐）。
+
+### 8.3 交付物与验收
+
+| 交付 | 位置 | 判据 |
+|---|---|---|
+| 工件构建器 | `tools/kernel/build_seq.py`（Python + uv；CPU 可跑，无 GPU 依赖） | 同一数据集构建两遍字节一致；manifest 的 `seq.bin` / `doc_tokens.bin` sha256 与文件一致；`sl artifact verify` 通过 |
+| Python 参考打分 | `tools/kernel/ref_score.py` | 给定数据集/查询/工件，输出 top-k（doc id + 分数），供 Rust 对拍 |
+| Rust 适配器 | `crates/sl-adapters/src/seq.rs`（名字 `seq`） | 与 Python 参考实现对同一 fixture 的 top-k 与分数（1e-6 相对误差）一致；CPU 单查询 < 5ms（nq-sub 规模） |
+| 效果对比 | `docs/RESULTS.md` 新增一节 | 四数据集上与 `bm25` / `faq-bm25` 同表；至少一组消融（`lambda_seq=0` vs 0.5、`ordered` true/false、`orders=[1]` vs `[1,2]`） |
+
+### 8.4 约束
+
+- v0 构建器**不读 qrels**（只看 `corpus.jsonl`）；`trained_on` 必须如实写「语料内统计」。
+- 工件按数据集生成（`source_corpus.fingerprint` 绑定），换数据集不能复用。
+- 运行时必须纯 CPU；构建器允许可选 GPU，但 v0 不需要。

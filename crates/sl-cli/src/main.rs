@@ -65,6 +65,20 @@ enum Command {
         /// 运行目录（含 run.json）
         run_dir: PathBuf,
     },
+    /// 内核工件：复核某次运行记录的工件哈希（换机器 / 长期归档后确认工件没被换掉）
+    Artifact {
+        #[command(subcommand)]
+        command: ArtifactCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ArtifactCommand {
+    /// 按 run.json 里登记的工件目录重新算哈希并比对
+    Verify {
+        /// 运行目录（含 run.json）
+        run_dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -107,7 +121,53 @@ fn real_main() -> Result<()> {
             run_one(&cli.data_dir, &cli.results_dir, &dataset, &adapters, k, warmup, label, allow_dirty)
         }
         Command::Report { run_dir } => rerender(&run_dir),
+        Command::Artifact { command } => match command {
+            ArtifactCommand::Verify { run_dir } => verify_artifacts(&run_dir),
+        },
     }
+}
+
+fn verify_artifacts(run_dir: &Path) -> Result<()> {
+    let path = run_dir.join("run.json");
+    let text = fs::read_to_string(&path).with_context(|| format!("读 {} 失败", path.display()))?;
+    let record: run::RunRecord =
+        serde_json::from_str(&text).with_context(|| format!("解析 {} 失败", path.display()))?;
+
+    let mut checked = 0usize;
+    for adapter in &record.adapters {
+        for artifact in &adapter.info.artifacts {
+            let dir = Path::new(&artifact.dir);
+            let current = sl_core::KernelArtifact::from_dir(dir)
+                .with_context(|| format!("复核适配器 {} 的工件 {} 失败", adapter.info.name, artifact.id))?;
+            if current.manifest_sha256 != artifact.manifest_sha256 {
+                bail!(
+                    "适配器 {} 的工件 {} 与运行记录不一致：manifest 哈希 {} ≠ 记录里的 {}",
+                    adapter.info.name,
+                    artifact.id,
+                    &current.manifest_sha256[..12],
+                    &artifact.manifest_sha256[..12]
+                );
+            }
+            if current.files != artifact.files {
+                bail!("适配器 {} 的工件 {} 内容文件哈希与运行记录不一致", adapter.info.name, artifact.id);
+            }
+            checked += 1;
+            println!(
+                "OK {} → {}（{}，{}…，运行时 {}）",
+                adapter.info.name,
+                artifact.id,
+                artifact.kind,
+                &artifact.manifest_sha256[..12],
+                artifact.runtime_device
+            );
+        }
+    }
+    if checked == 0 {
+        println!("（{} 里没有登记内核工件）", path.display());
+    } else {
+        println!("已复核 {checked} 个工件");
+    }
+    Ok(())
 }
 
 fn list_datasets(data_dir: &Path) -> Result<()> {
@@ -213,6 +273,11 @@ fn run_one(
         );
     }
     let dataset = loaded.dataset;
+
+    // 把数据集上下文交给适配器：内核适配器（如 `seq`）按它定位 `data/<dataset>/artifacts/<id>/`。
+    // 显式设置比让适配器猜路径可靠；单独的 `SL_SEQ_ARTIFACT` 仍可覆盖具体工件目录。
+    std::env::set_var("SL_DATA_DIR", data_dir);
+    std::env::set_var("SL_DATASET", dataset_name);
 
     let mut adapters: Vec<Box<dyn sl_core::Adapter>> = Vec::new();
     for name in adapter_names {

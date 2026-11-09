@@ -110,6 +110,17 @@ pub fn render_markdown(record: &RunRecord) -> String {
                 serde_json::to_string(&adapter.info.config).unwrap_or_default()
             ));
         }
+        for artifact in &adapter.info.artifacts {
+            out.push_str(&format!(
+                "  - 工件：`{}`（{} / {}；manifest {}…；运行时 {}；训练来源：{}）\n",
+                artifact.id,
+                artifact.kind,
+                artifact.weights_origin,
+                &artifact.manifest_sha256[..12.min(artifact.manifest_sha256.len())],
+                artifact.runtime_device,
+                artifact.trained_on,
+            ));
+        }
     }
     out
 }
@@ -162,6 +173,7 @@ mod tests {
                 host: "host".into(),
                 os: "os".into(),
                 started_at: "2026-01-01T00:00:00+08:00".into(),
+                gpu: None,
             },
         }
     }

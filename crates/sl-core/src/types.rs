@@ -208,3 +208,107 @@ impl PruneReport {
         self.dropped_qrels == 0 && self.dropped_queries == 0
     }
 }
+
+/// 内核工件：深度学习内核的离线产物（embedding / graph / concept / token weights）。
+///
+/// 准入规则见 `docs/STANDARD.md` §10：运行时必须是 CPU；工件必须带哈希与训练来源，
+/// 缺失或校验失败时适配器构造即失败，不允许「跑出结果再解释」。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelArtifact {
+    /// 工件 id（如 `seq-v0`）。
+    pub id: String,
+    /// 工件类型：`seq_graph` / `embedding` / `concept` / `token_weights` / `vocab`。
+    pub kind: String,
+    /// 权重来源：`corpus_ppmi` / `gpu_learned` / `pretrained:<model-id>` 等。
+    pub weights_origin: String,
+    /// 工件目录（相对仓库根或绝对路径），用于复核。
+    pub dir: String,
+    /// `manifest.json` 自身内容的 sha256。
+    pub manifest_sha256: String,
+    /// 工件内容文件 → sha256（来自 manifest 的 `files`）。
+    pub files: BTreeMap<String, String>,
+    /// 训练/构建来源（数据集指纹 + split，或「语料内统计」）。
+    pub trained_on: String,
+    /// 预训练污染声明（是否可能见过评测语料）。
+    pub contamination: String,
+    /// 运行时设备要求，必须包含 `cpu` 才准入。
+    pub runtime_device: String,
+}
+
+impl KernelArtifact {
+    /// 从工件目录读取 `manifest.json`，校验必备字段并算出哈希。
+    ///
+    /// 任何一项不合格都直接报错——这是「内核工件可审计」的强制点。
+    pub fn from_dir(dir: &std::path::Path) -> anyhow::Result<Self> {
+        use sha2::{Digest, Sha256};
+        let manifest_path = dir.join("manifest.json");
+        let bytes = std::fs::read(&manifest_path)
+            .map_err(|err| anyhow::anyhow!("读取工件 {} 失败：{err}（先跑 tools/kernel/build_seq.py）", manifest_path.display()))?;
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|err| anyhow::anyhow!("{} 不是合法 JSON：{err}", manifest_path.display()))?;
+
+        let get_str = |key: &str| -> anyhow::Result<String> {
+            manifest
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| anyhow::anyhow!("工件 manifest 缺字段 `{key}`：{}", manifest_path.display()))
+        };
+
+        let runtime_device = manifest
+            .get("runtime")
+            .and_then(|runtime| runtime.get("device"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !runtime_device.contains("cpu") {
+            anyhow::bail!(
+                "工件 {} 的 runtime.device = {:?}，不符合「运行时必须 CPU」的准入条件（STANDARD §10）",
+                dir.display(),
+                runtime_device
+            );
+        }
+
+        let mut files = BTreeMap::new();
+        if let Some(map) = manifest.get("files").and_then(|v| v.as_object()) {
+            for (name, digest) in map {
+                let expected = digest
+                    .get("sha256")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("工件 manifest 的 files.{name} 缺 sha256"))?;
+                let path = dir.join(name);
+                let content = std::fs::read(&path)
+                    .map_err(|err| anyhow::anyhow!("读取工件文件 {} 失败：{err}", path.display()))?;
+                let mut hasher = Sha256::new();
+                hasher.update(&content);
+                let actual = format!("{:x}", hasher.finalize());
+                if actual != expected {
+                    anyhow::bail!(
+                        "工件文件 {} 的 sha256 与 manifest 不符（期望 {}，实际 {}）——工件被改过",
+                        path.display(),
+                        expected,
+                        actual
+                    );
+                }
+                files.insert(name.clone(), actual);
+            }
+        }
+        if files.is_empty() {
+            anyhow::bail!("工件 {} 的 manifest 没有 files 摘要，无法审计", dir.display());
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        Ok(Self {
+            id: get_str("id")?,
+            kind: get_str("kind")?,
+            weights_origin: get_str("weights_origin")?,
+            dir: dir.display().to_string(),
+            manifest_sha256: format!("{:x}", hasher.finalize()),
+            files,
+            trained_on: get_str("trained_on")?,
+            contamination: get_str("contamination")?,
+            runtime_device,
+        })
+    }
+}

@@ -216,6 +216,9 @@ pub struct EnvInfo {
     pub host: String,
     pub os: String,
     pub started_at: String,
+    /// 机器上是否有 GPU（只记录，不参与打分；内核准入要求运行时 CPU）。
+    #[serde(default)]
+    pub gpu: Option<String>,
 }
 
 impl EnvInfo {
@@ -228,6 +231,7 @@ impl EnvInfo {
                 .unwrap_or_else(|_| "unknown".into()),
             os: os_pretty_name(),
             started_at: chrono::Local::now().to_rfc3339(),
+            gpu: command_output("nvidia-smi", &["--query-gpu=name", "--format=csv,noheader"]),
         }
     }
 }

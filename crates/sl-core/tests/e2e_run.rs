@@ -136,6 +136,7 @@ fn run_produces_comparable_metrics_and_report() {
             host: "localhost".into(),
             os: "test".into(),
             started_at: "2026-01-01T00:00:00+00:00".into(),
+            gpu: None,
         },
     };
     let md = render_markdown(&record);

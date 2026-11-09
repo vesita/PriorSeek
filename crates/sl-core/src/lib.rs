@@ -21,4 +21,4 @@ pub mod types;
 pub use adapter::{Adapter, AdapterInfo};
 pub use metrics::{evaluate_rankings, Metrics, PerQuery};
 pub use run::{run_dataset, AdapterOutcome, EnvInfo, RunRecord};
-pub use types::{Counts, Dataset, Doc, FileDigest, Manifest, Qrels, Query};
+pub use types::{Counts, Dataset, Doc, FileDigest, KernelArtifact, Manifest, Qrels, Query};

@@ -5,7 +5,7 @@
 //! 2. 分数只用于排序，跨适配器不可比（不做归一、不跨算法比分数）；
 //! 3. `index` 只看 `docs`，`search` 只看 query 文本 —— 适配器拿不到 qrels，不能用答案调参。
 
-use crate::types::Doc;
+use crate::types::{Doc, KernelArtifact};
 use serde::{Deserialize, Serialize};
 
 /// 适配器元信息，会原样进运行记录。定义「和谁在比」靠它。
@@ -22,6 +22,9 @@ pub struct AdapterInfo {
     /// 参与排序的全部显式参数（k1/b、权重、分词器、是否重排……），原样记录。
     #[serde(default)]
     pub config: serde_json::Value,
+    /// 深度学习内核的离线工件（词法实现为空）。准入与审计规则见 `docs/STANDARD.md` §10。
+    #[serde(default)]
+    pub artifacts: Vec<KernelArtifact>,
 }
 
 impl AdapterInfo {
@@ -37,11 +40,18 @@ impl AdapterInfo {
             version: version.into(),
             source: source.into(),
             config: serde_json::Value::Null,
+            artifacts: Vec::new(),
         }
     }
 
     pub fn with_config(mut self, config: serde_json::Value) -> Self {
         self.config = config;
+        self
+    }
+
+    /// 登记一个内核工件（会进 `run.json`，报告里显示哈希前缀）。
+    pub fn with_artifact(mut self, artifact: KernelArtifact) -> Self {
+        self.artifacts.push(artifact);
         self
     }
 }
