@@ -55,13 +55,15 @@ results/        运行记录（不进 git）
 
 | 数据集 | 族 | 规模 | 状态 |
 |---|---|---|---|
-| scifact | ranking | 5,183 文档 / 1,109 查询（300 计分） | 已构建校验；已跑一轮对比（见 `docs/RESULTS.md`） |
-| arguana | ranking | 8,674 文档 / 1,406 查询（1,401 计分） | 已构建校验；评测待跑 |
-| qbqtc | ranking | 4,889 title / 4,924 查询（3,749 计分，中文） | 已构建校验；评测待跑 |
-| nq-sub | ranking | 50,000 文档池 / 3,452 查询（seed 固定） | 已构建校验；评测待跑 |
+| scifact | ranking | 5,183 文档 / 1,109 查询（300 计分） | 已评测 |
+| arguana | ranking | 8,674 文档 / 1,406 查询（1,401 计分） | 已评测 |
+| qbqtc | ranking | 4,889 title / 4,924 查询（3,749 计分，中文） | 已评测（中文方案在这里胜出） |
+| nq-sub | ranking | 50,000 文档池 / 3,452 查询（seed 固定） | 已评测 |
 
 数据来源地址、许可、子集口径与重建后的指纹基准：见 [`docs/DATASETS.md`](docs/DATASETS.md)。
-已有结果：见 [`docs/RESULTS.md`](docs/RESULTS.md)（目前只有 scifact 一轮，单次运行，不作强弱结论）。
+已有结果：见 [`docs/RESULTS.md`](docs/RESULTS.md)（四个数据集各一轮，单次运行）。
+一句话读法：**英文上 `rs` 与 `bm25` 并列前二；中文上 hub 的 `faq-bm25` / `faq-hybrid` 反超 `rs`**——
+没有一个实现全场景通吃，所以本仓不把不同数据集的分数平均成一个总分。
 
 适配器：`bm25`、`faq-char`/`faq-bigram`/`faq-word`/`faq-hybrid`/`faq-bm25`（移植自
 `~/coding/hub/faq-search`）、`rs`（`~/coding/my/relation-search` 的 Rust BM25+ast-grep 代码检索）。
