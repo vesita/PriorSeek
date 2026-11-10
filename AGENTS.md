@@ -13,6 +13,14 @@ Python 侧（`tools/datasets/`）把公开数据转成规范三元组。
 3. **不跨任务族排名**：ranking / long_context_retrieval / end_to_end_qa 的分数不进同一张表。
    报告与结论都按这个前提写。
 
+## 术语（不许混用）
+
+- **内核网络**：产出检索参数的模型，有**参数量**（可训练权重个数）。
+- **先验因子**：内核网络的**输出**，外壳检索时消费；有**因子规格**（形状/dtype/个数）。
+- **外壳**：用先验因子执行检索的算法，只有算法超参，**不是**模型参数。
+- 规则：说"内核要小"时指的是**参数量**；说"因子变多"时指的是**输出**。两者不得混写，
+  工件里也必须分列（`prior_factor` / `network`）。详见 [`docs/KERNEL.md`](docs/KERNEL.md) §0。
+
 ## 改代码时的约束
 
 - 适配器（`crates/sl-adapters/`）只实现 `sl_core::Adapter`：`index(docs)` + `search(query, k)`。

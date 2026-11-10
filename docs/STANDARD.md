@@ -181,7 +181,8 @@ report.md                人读的对比表（按 nDCG 排序，附可比范围�
 
 1. **离线工件化**：运行时只读工件（embedding / graph / concept / token_weights），不做在线训练；
 2. **工件登记**：`AdapterInfo.artifacts` 记录 `id / kind / sha256 / trained_on / contamination / runtime`，
-   缺失或哈希不符 → 构造即失败；
+   并**分别**记录两件事：**先验因子规格**（内核的输出：`prior_factor`）与**内核网络参数量 / 权重哈希**
+   （模型本身：`network`）。二者不得混写——"因子更多"与"网络更大"是两个不同变量，见 `docs/KERNEL.md` §0。
 3. **训练/评测隔离**：有监督训练只能读 `train` split；适配器接口里没有 qrels，结构上拿不到评测答案；
 4. **运行时非 GPU**：工件必须声明 `runtime.device = cpu`，`sl run` 记录实际运行设备；
 5. **CPU 对拍**：GPU 上训练/编码的工件，必须在 CPU 运行路径上与训练环境打分一致（容差写进工件）；
