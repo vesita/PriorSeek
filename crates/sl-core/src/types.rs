@@ -73,6 +73,12 @@ pub struct Manifest {
     pub notes: String,
     pub counts: Counts,
     pub files: BTreeMap<String, FileDigest>,
+    /// 可选训练划分的文件摘要（`train_queries.jsonl` / `train_qrels.tsv`）。
+    ///
+    /// **不参与 [`Manifest::fingerprint`]**：训练数据换一版、测试题没变，两次运行在 test 上仍然可比；
+    /// 但它必须在训练工具里被校验，否则「训练用了哪份数据」不可审计。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub train_files: BTreeMap<String, FileDigest>,
 }
 
 impl Manifest {

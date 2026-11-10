@@ -44,6 +44,10 @@ pub struct SeqParams {
     pub ordered: bool,
     /// 匹配次数上限，避免长文档靠重复刷分。
     pub max_matches: usize,
+    /// order=1（相邻）时序边的权重系数；默认 1.0 = 原统计版行为。
+    pub w_order_1: f64,
+    /// order=2（隔一）时序边的权重系数；默认 1.0。
+    pub w_order_2: f64,
 }
 
 impl Default for SeqParams {
@@ -54,6 +58,8 @@ impl Default for SeqParams {
             orders: vec![1, 2],
             ordered: true,
             max_matches: 3,
+            w_order_1: 1.0,
+            w_order_2: 1.0,
         }
     }
 }
@@ -66,6 +72,7 @@ impl SeqParams {
     /// - `SL_SEQ_ORDERS`（默认 `1,2`；只接受 1 / 2）
     /// - `SL_SEQ_ORDERED`（默认 `true`；`false` = 无序邻近）
     /// - `SL_SEQ_MAX_MATCHES`（默认 3）
+    /// - `SL_SEQ_W_ORDER1` / `SL_SEQ_W_ORDER2`（默认 1.0；学习版写入的时序边权重系数）
     pub fn from_env() -> anyhow::Result<Self> {
         let mut params = Self::default();
         if let Ok(raw) = std::env::var("SL_SEQ_LAMBDA_SEQ") {
@@ -122,6 +129,21 @@ impl SeqParams {
             }
             params.max_matches = value;
         }
+        for (env_name, slot) in [
+            ("SL_SEQ_W_ORDER1", &mut params.w_order_1),
+            ("SL_SEQ_W_ORDER2", &mut params.w_order_2),
+        ] {
+            if let Ok(raw) = std::env::var(env_name) {
+                let value: f64 = raw
+                    .trim()
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("{env_name} 不是数字：{raw:?}"))?;
+                if !value.is_finite() {
+                    anyhow::bail!("{env_name} 必须是有限数：{raw:?}");
+                }
+                *slot = value;
+            }
+        }
         Ok(params)
     }
 
@@ -132,6 +154,8 @@ impl SeqParams {
             "orders": self.orders,
             "ordered": self.ordered,
             "max_matches": self.max_matches,
+            "w_order_1": self.w_order_1,
+            "w_order_2": self.w_order_2,
         })
     }
 }
@@ -506,10 +530,16 @@ impl Adapter for SeqAdapter {
         }
 
         if self.params.lambda_seq > 0.0 && !pairs.is_empty() {
-            let mut pair_weights: HashMap<(u32, u32), f64> = HashMap::new();
+            // 按 (a, b, order) 分槽再乘该阶的权重系数：w1=w2=1 时与「先合并再乘 sat」逐位等价
+            // （sat 只依赖 (a,b) 与 window，不依赖阶），所以默认配置下打分与 0.1.0 完全一致。
+            let mut pair_weights: HashMap<(u32, u32, u8), f64> = HashMap::new();
             let mut involved: Vec<u32> = Vec::new();
-            for (a, b, _order, weight) in &pairs {
-                *pair_weights.entry((*a, *b)).or_insert(0.0) += *weight as f64;
+            for (a, b, order, weight) in &pairs {
+                let factor = match order {
+                    1 => self.params.w_order_1,
+                    _ => self.params.w_order_2,
+                };
+                *pair_weights.entry((*a, *b, *order)).or_insert(0.0) += *weight as f64 * factor;
                 if !involved.contains(a) {
                     involved.push(*a);
                 }
@@ -535,7 +565,7 @@ impl Adapter for SeqAdapter {
                     continue;
                 }
                 let mut seq_score = 0.0;
-                for ((a, b), weight) in &pair_weights {
+                for ((a, b, _order), weight) in &pair_weights {
                     let Some(pos_a) = self.positions.get(a) else { continue };
                     let Some(pos_b) = self.positions.get(b) else { continue };
                     let mut matches = 0usize;

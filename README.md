@@ -34,6 +34,7 @@ uv run python build.py scifact
 uv run python build.py arguana
 uv run python build.py qbqtc
 uv run python build.py nq-sub        # 约 498MB 下载，构建出 50k 文档池
+uv run python build_train_split.py scifact   # 可选：训练划分（内核训练工具用）
 
 # 2) 校验（不一致会直接失败）
 cd ../..

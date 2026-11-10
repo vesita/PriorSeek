@@ -3,7 +3,10 @@ name = "search-lab-kernel"
 version = "0.1.0"
 description = "search-lab seq 内核（token 时序相关度 v0）工件构建器与参考打分"
 requires-python = ">=3.11"
-dependencies = ["jieba>=0.42.1"]
+dependencies = [
+    "jieba>=0.42.1",
+    "numpy>=2.4.6",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]

@@ -52,6 +52,29 @@ QBQTC 通过 HF rows API 按页拉取（`length=100`，共 50 页），页级缓
 
 > LongBench / RULER 与 ranking 族的指标**不可互换**，原因见 [`docs/STANDARD.md`](STANDARD.md) §2。
 
+## 2.5 训练划分（train split，可选）
+
+`scifact` 额外提供训练划分，供内核训练工具使用；**只有 scifact 有**（其余三个数据集上游只有 test qrels）。
+
+| 文件 | 内容 | 谁读 |
+|---|---|---|
+| `train_queries.jsonl` | 809 条训练查询（与 `queries.jsonl` 同 schema） | 训练工具（`tools/kernel/train_seq_weights.py`） |
+| `train_qrels.tsv` | 919 条正例判定 | 训练工具；**适配器读不到**（`sl_core::Adapter` 接口里没有它） |
+
+构建（在 `tools/datasets/` 下，缓存已就绪时秒级）：
+
+```bash
+uv run python build_train_split.py scifact
+```
+
+两条契约要点：
+
+1. **不进 manifest 指纹**：训练数据换一版、测试题没变，两次运行在 test 上仍然可比。摘要记在
+   `manifest.json` 的 `train_files`（独立字段），`sl_core::load_train_split` 加载时逐一比对，
+   不符直接报错——「训练用了哪份数据」可审计，但不会让旧结果失效。
+2. **训练/测试隔离是结构性的**：训练器代码只打开 train 文件，`tools/kernel/tests/test_train_seq_weights.py`
+   里有一条测试用路径探针断言 `qrels.tsv` 从未被打开。
+
 ## 3. 重建（新机器 / 清空缓存后）
 
 ```bash
@@ -68,6 +91,8 @@ uv run python build.py qbqtc
 uv run python build.py nq-sub               # 首次要下 498MB 的 nq.zip
 cd ../..
 for d in scifact arguana qbqtc nq-sub; do cargo run -q -p sl-cli -- dataset verify $d; done
+# 可选：scifact 的训练划分（内核训练工具用）
+cd tools/datasets && uv run python build_train_split.py scifact && cd ../..
 ```
 
 `data/` 与 `tools/datasets/.cache/` 都不进 git。缓存可整目录删除，重建时重新下载。

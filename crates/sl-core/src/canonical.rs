@@ -23,6 +23,10 @@ use std::path::{Path, PathBuf};
 pub const CORPUS_FILE: &str = "corpus.jsonl";
 pub const QUERIES_FILE: &str = "queries.jsonl";
 pub const QRELS_FILE: &str = "qrels.tsv";
+/// 可选训练查询（与测试集同 schema）；只有声明了 train split 的数据集才有。
+pub const TRAIN_QUERIES_FILE: &str = "train_queries.jsonl";
+/// 可选训练相关性判定；**只给训练工具读，适配器永远看不到**。
+pub const TRAIN_QRELS_FILE: &str = "train_qrels.tsv";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
 /// 规范数据的三个内容文件（manifest 里记录它们各自的摘要）。
@@ -154,6 +158,69 @@ fn read_qrels(path: &Path) -> Result<Qrels> {
     Ok(qrels)
 }
 
+/// 数据集的训练划分（可选）。它不属于测试题，所以不进 manifest 指纹；
+/// 训练工具必须校验 [`TrainSplit::digests`]，并在工件 manifest 里记录训练数据来源。
+#[derive(Debug, Clone)]
+pub struct TrainSplit {
+    pub queries: Vec<Query>,
+    pub qrels: Qrels,
+    /// 训练文件 → 期望摘要（来自 `manifest.train_files`，加载时已逐一比对）。
+    pub digests: BTreeMap<String, FileDigest>,
+}
+
+impl TrainSplit {
+    /// 参与计分的训练查询数（至少一个正例）。
+    pub fn scored_queries(&self) -> usize {
+        self.qrels.values().filter(|map| map.values().any(|rel| *rel > 0)).count()
+    }
+}
+
+/// 读取可选的 train split。没有 train 文件时返回 `Ok(None)`；
+/// 有文件但摘要不符/格式不对时报错（不允许「静默降级成没有训练数据」）。
+pub fn load_train_split(dir: &Path) -> Result<Option<TrainSplit>> {
+    let queries_path = dir.join(TRAIN_QUERIES_FILE);
+    let qrels_path = dir.join(TRAIN_QRELS_FILE);
+    if !queries_path.exists() && !qrels_path.exists() {
+        return Ok(None);
+    }
+    if !queries_path.exists() || !qrels_path.exists() {
+        bail!(
+            "{} 只有一半 train split（{} / {} 必须同时存在）",
+            dir.display(),
+            TRAIN_QUERIES_FILE,
+            TRAIN_QRELS_FILE
+        );
+    }
+
+    let manifest: Manifest = serde_json::from_str(
+        &fs::read_to_string(dir.join(MANIFEST_FILE))
+            .with_context(|| format!("读 {} 失败", dir.join(MANIFEST_FILE).display()))?,
+    )?;
+    let mut digests = BTreeMap::new();
+    for name in [TRAIN_QUERIES_FILE, TRAIN_QRELS_FILE] {
+        let actual = file_digest(&dir.join(name))?;
+        match manifest.train_files.get(name) {
+            Some(expected) if *expected == actual => {
+                digests.insert(name.to_string(), actual);
+            }
+            Some(expected) => bail!(
+                "训练文件 {} 的 sha256 与 manifest.train_files 不符（期望 {}，实际 {}）——训练数据被改过",
+                name,
+                expected.sha256,
+                actual.sha256
+            ),
+            None => bail!(
+                "{} 存在但 manifest.train_files 没有登记它 —— 先跑 `uv run tools/datasets/build_train_split.py` 重建清单",
+                name
+            ),
+        }
+    }
+
+    let queries: Vec<Query> = read_jsonl(&queries_path)?;
+    let qrels = read_qrels(&qrels_path)?;
+    Ok(Some(TrainSplit { queries, qrels, digests }))
+}
+
 /// `load_dataset` 的结果：数据集本体 + 契约清理报告 + 目录。
 pub struct Loaded {
     pub dataset: Dataset,
@@ -235,6 +302,7 @@ mod tests {
                 notes: String::new(),
                 counts: Counts::default(),
                 files: BTreeMap::new(),
+                train_files: BTreeMap::new(),
             },
         }
     }

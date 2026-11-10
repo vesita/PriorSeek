@@ -54,6 +54,8 @@ class ScoreParams:
     orders: tuple[int, ...] = (1, 2)
     ordered: bool = True
     max_matches: int = 3
+    w_order1: float = 1.0
+    w_order2: float = 1.0
 
     def to_json(self) -> dict:
         return {
@@ -62,6 +64,8 @@ class ScoreParams:
             "orders": list(self.orders),
             "ordered": self.ordered,
             "max_matches": self.max_matches,
+            "w_order1": self.w_order1,
+            "w_order2": self.w_order2,
             "k1": K1,
             "b": B,
         }
@@ -126,6 +130,61 @@ class RefScorer:
 
     # ------------------------------------------------------------------ 查询
 
+    def all_scores(self, query: str) -> dict[str, float]:
+        """返回**全部**非零分文档的 `{doc_id: score}`（不截断、不排序）。
+
+        训练器用它取「单字项 / 各阶时序项」的分量：分别用 λ=0、λ=1+orders=(1,)、λ=1+orders=(2,)
+        三次调用相减即得 (s_uni, s1, s2)，因此分量与正式打分走**同一段代码**，不会分叉。
+        """
+        return {doc_id: score for doc_id, score in self._raw_scores(query).items()}
+
+    def _raw_scores(self, query: str) -> dict[str, float]:
+        """内部：未截断的文档分数字典（键是 doc id）。"""
+        return dict(self._score_docs(query))
+
+    def _score_docs(self, query: str) -> dict[str, float]:
+        """按 §8.1 计算 `{doc_id: score}`，不排序不截断。"""
+        if not self.artifact.doc_tokens:
+            return {}
+        raw_terms = bm25_terms(query)
+        if not raw_terms:
+            return {}
+        term_ids: list[int] = []
+        seen: set[int] = set()
+        for term in raw_terms:
+            token = self._vocab_index.get(term)
+            if token is not None and token not in seen:
+                seen.add(token)
+                term_ids.append(token)
+        if not term_ids:
+            return {}
+
+        scores: dict[int, float] = {}
+        for token in term_ids:
+            idf = self.artifact.idf[token]
+            if idf <= 0.0:
+                continue
+            docs = self._term_docs[token]
+            if docs is None:
+                continue
+            tfs = self._term_tfs[token]
+            assert tfs is not None
+            for doc_idx, tf in zip(docs, tfs):
+                doc_len = float(self._doc_len[doc_idx])
+                denom = tf + K1 * (1.0 - B + B * doc_len / self._avg_len)
+                scores[doc_idx] = scores.get(doc_idx, 0.0) + idf * tf * (K1 + 1.0) / denom
+
+        if self.params.lambda_seq > 0.0:
+            seq_scores = self._sequence_scores(raw_terms)
+            for doc_idx, bonus in seq_scores.items():
+                scores[doc_idx] = scores.get(doc_idx, 0.0) + self.params.lambda_seq * bonus
+
+        return {
+            self.artifact.doc_ids[doc_idx]: score
+            for doc_idx, score in scores.items()
+            if score > 0.0
+        }
+
     def search(self, query: str, k: int) -> list[tuple[str, float]]:
         """返回 [(doc_id, score)]，按分数降序、doc id 升序，最多 k 条。"""
         if k <= 0 or not self.artifact.doc_tokens:
@@ -175,8 +234,9 @@ class RefScorer:
         # 查询 token 序列：保留重复与 OOV 过滤（与 Rust sequence 一致）。
         sequence = [token for token in (self._vocab_index.get(term) for term in raw_terms) if token is not None]
 
-        # 位置对 (a,b,order) 去重；同一 (a,b) 跨阶权重相加。
-        pair_weights: dict[tuple[int, int], float] = {}
+        # 位置对 (a,b,order) 去重；按阶分别乘以该阶的权重系数（w=1 时与旧版逐位等价：
+        # sat(c) 只依赖 (a,b) 与 window，不依赖阶）。
+        pair_weights: dict[tuple[int, int, int], float] = {}
         seen_triples: set[tuple[int, int, int]] = set()
         involved: set[int] = set()
         for order in self.params.orders:
@@ -192,7 +252,8 @@ class RefScorer:
                 weight = self._edges.get(triple)
                 if not weight:
                     continue  # 查不到或零权边（Rust 侧只加载 weight>0 的边）
-                pair_weights[(a, b)] = pair_weights.get((a, b), 0.0) + weight
+                factor = self.params.w_order1 if order == 1 else self.params.w_order2
+                pair_weights[(a, b, order)] = pair_weights.get((a, b, order), 0.0) + weight * factor
                 involved.add(a)
                 involved.add(b)
         if not pair_weights:
@@ -225,7 +286,7 @@ class RefScorer:
             if not positions:
                 continue
             seq_score = 0.0
-            for (a, b), weight in pair_weights.items():
+            for (a, b, _order), weight in pair_weights.items():
                 pos_a = positions.get(a)
                 pos_b = positions.get(b)
                 if not pos_a or not pos_b:
@@ -307,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
         "--unordered", action="store_true", help="关闭顺序要求，改为无序邻近（同窗口）对照"
     )
     parser.add_argument("--max-matches", type=int, default=3, help="匹配次数上限（默认 3）")
+    parser.add_argument("--w-order1", type=float, default=1.0, help="order=1 边权系数（默认 1.0）")
+    parser.add_argument("--w-order2", type=float, default=1.0, help="order=2 边权系数（默认 1.0）")
     args = parser.parse_args(argv)
 
     data_dir = args.data_dir.resolve()
@@ -328,6 +391,8 @@ def main(argv: list[str] | None = None) -> int:
         orders=orders,
         ordered=not args.unordered,
         max_matches=args.max_matches,
+        w_order1=args.w_order1,
+        w_order2=args.w_order2,
     )
 
     started = time.monotonic()

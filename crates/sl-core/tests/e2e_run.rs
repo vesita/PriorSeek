@@ -79,6 +79,7 @@ fn tiny_dataset() -> Dataset {
             notes: "端到端夹具".into(),
             counts: Counts::default(),
             files: BTreeMap::new(),
+            train_files: BTreeMap::new(),
         },
     }
 }
