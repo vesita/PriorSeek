@@ -7,6 +7,7 @@ description = "search-lab 适配器：把各个搜索算法包装成统一 Adapt
 
 [dependencies]
 sl-core = { path = "../sl-core" }
+sl-engine = { path = "../sl-engine" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/sl-core",
+    "crates/sl-engine",
     "crates/sl-adapters",
     "crates/sl-cli",
 ]

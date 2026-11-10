@@ -22,6 +22,7 @@ mod bm25_llm;
 mod faq;
 mod rs;
 mod seq;
+mod shell;
 pub mod tokenize;
 pub mod tokenizer_llm;
 
@@ -30,6 +31,7 @@ pub use faq::{FaqAdapter, Scheme};
 pub use rs::RelationSearchAdapter;
 pub use bm25_llm::Bm25LlmAdapter;
 pub use seq::SeqAdapter;
+pub use shell::ShellAdapter;
 
 /// 当前可用的适配器名（进 `sl run --adapters` 的取值），顺序即展示顺序。
 pub fn names() -> Vec<&'static str> {
@@ -43,6 +45,8 @@ pub fn names() -> Vec<&'static str> {
         "rs",
         "seq",
         "bm25-llm",
+        "bow",
+        "oac",
     ]
 }
 
@@ -56,6 +60,8 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "rs" => Box::new(RelationSearchAdapter::new()?),
         "seq" => Box::new(SeqAdapter::new()?),
         "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
+        "bow" => Box::new(ShellAdapter::bow()?),
+        "oac" => Box::new(ShellAdapter::oac()?),
         other => match Scheme::from_name(other) {
             Some(scheme) => Box::new(FaqAdapter::new(scheme)),
             None => bail!("未知适配器 {other:?}；当前可用：{}", names().join(", ")),
@@ -81,7 +87,9 @@ mod tests {
                 "faq-bm25",
                 "rs",
                 "seq",
-                "bm25-llm"
+                "bm25-llm",
+                "bow",
+                "oac"
             ]
         );
         let unique: std::collections::BTreeSet<&str> = names().into_iter().collect();

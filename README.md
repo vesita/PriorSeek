@@ -8,6 +8,7 @@
 - 参考项目笔记（借 nanoSeek / flowme 的实验纪律）：[`docs/REFERENCE_NOTES.md`](docs/REFERENCE_NOTES.md)
 - 数据集口径与构建：[`docs/DATASETS.md`](docs/DATASETS.md)
 - tokenizer 版本与规矩：[`docs/TOKENIZER.md`](docs/TOKENIZER.md)
+- 检索算法（外壳 + OAC 主算法）：[`docs/ALGORITHM.md`](docs/ALGORITHM.md)
 - 适配器清单与来源：[`docs/ADAPTERS.md`](docs/ADAPTERS.md)
 
 ## 方向：外壳明确，内核深度学习
@@ -53,6 +54,7 @@ cargo run -q -p sl-cli -- run --dataset scifact --adapters bm25,faq-hybrid,rs --
 ```text
 crates/
   sl-core/      数据契约、规范格式 IO、指标口径、适配器 trait、运行记录、报告渲染
+  sl-engine/    检索外壳：位置索引 + 词袋端点 + OAC 主算法（唯一一份索引，token 以 id 传入）
   sl-adapters/  BM25 / FAQ 五方案 / relation-search 的适配器实现与注册表
   sl-cli/       命令行：dataset list|verify|show、adapters、run、report
 tools/datasets/ Python 数据集构建器（下载、解压、裁剪、写 manifest）

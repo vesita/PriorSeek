@@ -1078,6 +1078,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sl-core",
+ "sl-engine",
  "tempfile",
  "tokenizers",
 ]
@@ -1105,6 +1106,16 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "sl-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sl-core",
 ]
 
 [[package]]

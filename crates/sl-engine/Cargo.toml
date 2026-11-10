@@ -1,0 +1,12 @@
+[package]
+name = "sl-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "search-lab 检索外壳：位置索引 + 统一打分接口（不依赖具体 tokenizer，token 以 u32 id 传递）"
+
+[dependencies]
+sl-core = { path = "../sl-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
