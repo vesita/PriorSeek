@@ -22,6 +22,17 @@ Python 侧（`tools/datasets/`）把公开数据转成规范三元组。
 - 指标改动必须同时更新 `metrics.rs` 的手算 golden 测试与 `docs/STANDARD.md` §5。
 - 外部实现（如 relation-search）用子进程接入时，`AdapterInfo` 必须记录二进制 sha256 + 来源 commit。
 
+## 参考项目纪律（借自 nanoSeek / flowme，已改写到我们的场景）
+
+详见 [`docs/REFERENCE_NOTES.md`](docs/REFERENCE_NOTES.md)。可执行的四条：
+
+1. **预注册**：开新对照实验前先写 `docs/PREREG-*.md`（问题 / 两臂 / 唯一变量 / 判据 / 预测值），
+   test 集只在最后看一次；超参用 train 内部交叉验证选。
+2. **不下空结论**：没测出差异只写「该口径下未测出差异」，并报 `Δ_min = 2×SE`；单 seed 只报「超过噪声带」。
+3. **消融 = retrain-without**（去掉特征重训），不是推理时把权重设 0。
+4. **地板行必报**（随机 / `bm25` / `faq-bm25`），训练算力与 CPU 运行延迟分列；学习版参数预算先定 **≤10k**
+   （第一步 3–5 个标量）——nanoSeek 的 75M 规模不适用于我们 809 条训练查询的数据量。
+
 ## 常用命令
 
 ```bash

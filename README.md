@@ -5,6 +5,7 @@
 
 - 对比口径（唯一事实源）：[`docs/STANDARD.md`](docs/STANDARD.md)
 - 内核设计（认知 token / token 关联 / 搜索权重，GPU 训练 + CPU 运行）：[`docs/KERNEL.md`](docs/KERNEL.md)
+- 参考项目笔记（借 nanoSeek / flowme 的实验纪律）：[`docs/REFERENCE_NOTES.md`](docs/REFERENCE_NOTES.md)
 - 数据集口径与构建：[`docs/DATASETS.md`](docs/DATASETS.md)
 - 适配器清单与来源：[`docs/ADAPTERS.md`](docs/ADAPTERS.md)
 
