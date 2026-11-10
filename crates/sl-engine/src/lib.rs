@@ -18,6 +18,6 @@ pub mod bow;
 pub mod index;
 pub mod oac;
 
-pub use bow::BowScorer;
+pub use bow::{BowScorer, WeightedTerm};
 pub use index::{Occurrence, PositionalIndex};
 pub use oac::{KernelGapTable, OacParams, OacScorer};

@@ -23,6 +23,7 @@
 //! 复杂度：对每篇候选文档，只在「实际命中的出现位置」上做 DP，
 //! `O(命中出现数 × max_skip × window)`，与文档长度线性、与语料规模无关。
 
+use crate::bow::WeightedTerm;
 use crate::index::PositionalIndex;
 use std::sync::Arc;
 
@@ -165,7 +166,7 @@ impl OacScorer {
     }
 
     /// 文档在查询下的 OAC 分数。
-    pub fn score_doc(&mut self, query: &[u32], doc: u32) -> f64 {
+    pub fn score_doc(&mut self, query: &[WeightedTerm], doc: u32) -> f64 {
         if query.is_empty() {
             return 0.0;
         }
@@ -181,7 +182,10 @@ impl OacScorer {
 
         // 收集本查询在本文档内的命中事件：(位置, 查询下标)，按位置升序。
         let mut events: Vec<(u32, usize)> = Vec::new();
-        for (qi, term) in query.iter().enumerate() {
+        for (qi, (term, weight)) in query.iter().enumerate() {
+            if *weight == 0.0 {
+                continue;
+            }
             for pos in self.index.positions_in(*term, doc) {
                 events.push((pos, qi));
             }
@@ -197,15 +201,22 @@ impl OacScorer {
         // 无序端点：词袋 IDF 覆盖。每个查询词独立贡献，不链式、不看位置，
         // 这正是 OAC 在 `ordered = false` 时的退化形态（见模块文档的退化表）。
         if !self.params.ordered {
-            let mut seen: Vec<u32> = Vec::new();
+            let mut seen: Vec<WeightedTerm> = Vec::new();
             let mut total = 0.0;
             for (_, qi) in &events {
-                let term = query[*qi];
-                if seen.contains(&term) {
-                    continue;
+                let (term, weight) = query[*qi];
+                match seen.iter_mut().find(|(t, _)| *t == term) {
+                    Some(slot) => {
+                        if weight <= slot.1 {
+                            continue;
+                        }
+                        // 更大的权重：先把刚计入的那份减掉，再按新权重加一次。
+                        total -= slot.1 * self.term_weight(term, doc);
+                        slot.1 = weight;
+                    }
+                    None => seen.push((term, weight)),
                 }
-                seen.push(term);
-                total += self.term_weight(term, doc);
+                total += weight * self.term_weight(term, doc);
             }
             return total;
         }
@@ -213,7 +224,8 @@ impl OacScorer {
         let mut best_total = 0.0f64;
 
         for (pos, qi) in events {
-            let idf = self.term_weight(query[qi], doc);
+            let (term, query_weight) = query[qi];
+            let idf = self.term_weight(term, doc) * query_weight;
             if idf <= 0.0 {
                 continue;
             }
@@ -292,11 +304,12 @@ impl OacScorer {
     }
 
     /// 检索：候选集 = 命中任一词项的文档，逐个打 OAC 分。
-    pub fn search(&mut self, query: &[u32], k: usize) -> Vec<(String, f64)> {
+    pub fn search(&mut self, query: &[WeightedTerm], k: usize) -> Vec<(String, f64)> {
         if query.is_empty() || k == 0 {
             return Vec::new();
         }
-        let candidates = self.index.candidates(query);
+        let terms: Vec<u32> = query.iter().map(|(term, _)| *term).collect();
+        let candidates = self.index.candidates(&terms);
         let mut scored: Vec<(u32, f64)> = candidates
             .into_iter()
             .map(|doc| {
@@ -321,6 +334,10 @@ mod tests {
     /// d1 = [1,2,3]（查询词按序、连续）
     /// d2 = [3,2,1]（顺序相反）
     /// d3 = [1,9,9,2]（按序但间隔 2）
+    fn unit(terms: &[u32]) -> Vec<WeightedTerm> {
+        terms.iter().map(|t| (*t, 1.0)).collect()
+    }
+
     fn scorer(params: OacParams) -> OacScorer {
         let index = PositionalIndex::build(vec![
             ("d1".to_string(), vec![1, 2, 3]),
@@ -336,7 +353,7 @@ mod tests {
         // 只比较**等长文档**，把「长度归一」这个因素排除掉：
         // d1 = [1,2,3] 正序，d2 = [3,2,1] 反序，两者长度都是 3。
         let mut s = scorer(OacParams { window: 8, max_skip: 2, ..Default::default() });
-        let q = [1u32, 2u32, 3u32];
+        let q = unit(&[1, 2, 3]);
         let d1 = s.score_doc(&q, 0);
         let d2 = s.score_doc(&q, 1);
         assert!(d1 > 0.0 && d2 > 0.0);
@@ -349,7 +366,7 @@ mod tests {
         // 长度归一开启时，长文档的稀疏匹配会被压低——这是模型定义的一部分，不是 bug。
         let mut with_norm = scorer(OacParams { window: 8, length_b: 0.75, ..Default::default() });
         let mut without = scorer(OacParams { window: 8, length_b: 0.0, ..Default::default() });
-        let q = [1u32, 2u32, 3u32];
+        let q = unit(&[1, 2, 3]);
         let (a, b) = (with_norm.score_doc(&q, 2), with_norm.score_doc(&q, 1));
         let (a0, b0) = (without.score_doc(&q, 2), without.score_doc(&q, 1));
         assert!(a < b, "有归一时长文档稀疏匹配被压低：{a} vs {b}");
@@ -364,7 +381,7 @@ mod tests {
             max_skip: 2,
             ..Default::default()
         });
-        let q = [1u32, 2u32, 3u32];
+        let q = unit(&[1, 2, 3]);
         let d1 = s.score_doc(&q, 0);
         let d2 = s.score_doc(&q, 1);
         assert!((d1 - d2).abs() < 1e-12, "无序模式下反序文档应与正序同分：{d1} vs {d2}");
@@ -383,7 +400,7 @@ mod tests {
             window: 8,
             ..Default::default()
         });
-        let q = [1u32, 2u32];
+        let q = unit(&[1, 2]);
         let a = with_discount.score_doc(&q, 2); // d3: 1 与 2 间隔 3
         let b = uniform.score_doc(&q, 2);
         assert!(a < b, "有折扣时应低于均匀：{a} vs {b}");
@@ -393,7 +410,7 @@ mod tests {
     fn window_limits_transitions() {
         let mut tight = scorer(OacParams { window: 1, max_skip: 0, ..Default::default() });
         let mut loose = scorer(OacParams { window: 8, max_skip: 0, ..Default::default() });
-        let q = [1u32, 2u32];
+        let q = unit(&[1, 2]);
         let tight_score = tight.score_doc(&q, 2); // d3: 1 与 2 间隔 3，超出 window=1
         let loose_score = loose.score_doc(&q, 2);
         assert!(tight_score < loose_score, "窗口收紧应降低跨距匹配的分数");
@@ -403,6 +420,6 @@ mod tests {
     fn empty_query_scores_zero_and_document_without_terms_scores_zero() {
         let mut s = scorer(OacParams::default());
         assert_eq!(s.score_doc(&[], 0), 0.0);
-        assert_eq!(s.score_doc(&[1u32, 2u32], 3), 0.0); // d4 不含 1/2
+        assert_eq!(s.score_doc(&unit(&[1, 2]), 3), 0.0); // d4 不含 1/2
     }
 }

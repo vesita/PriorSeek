@@ -12,7 +12,7 @@ use crate::tokenize::bm25_terms;
 use crate::tokenizer_llm::LlmTokenizer;
 use anyhow::Context;
 use sl_core::{Adapter, AdapterInfo, Doc};
-use sl_engine::{BowScorer, KernelGapTable, OacParams, OacScorer, PositionalIndex};
+use sl_engine::{BowScorer, KernelGapTable, OacParams, OacScorer, PositionalIndex, WeightedTerm};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -73,6 +73,109 @@ impl Tokenizer {
 
 }
 
+/// **先验因子**：`token → [(关联 token, 置信度)]` 的扩展表（`kind = query_expansion`）。
+///
+/// 由内核产出（P0 档是统计直接给的），外壳只负责消费：扩展词按 `alpha × conf` 加进查询。
+#[derive(Debug, Default)]
+struct ExpansionTable {
+    entries: std::collections::HashMap<String, Vec<(String, f64)>>,
+    /// 置信度的全局缩放（外壳的超参，不是内核参数）。
+    alpha: f64,
+    top_k: usize,
+    source: String,
+    sha256: String,
+}
+
+impl ExpansionTable {
+    /// 从工件目录加载（`manifest.json` + `expansion.json`）。
+    fn load(dir: &std::path::Path, alpha: f64, top_k: Option<usize>) -> anyhow::Result<Self> {
+        let manifest_path = dir.join("manifest.json");
+        let payload_path = dir.join("expansion.json");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&manifest_path)
+                .with_context(|| format!("读取扩展工件 {} 失败（先跑 tools/kernel/build_expansion.py）", manifest_path.display()))?,
+        )
+        .with_context(|| format!("解析 {} 失败", manifest_path.display()))?;
+        let payload = std::fs::read(&payload_path)
+            .with_context(|| format!("读取 {} 失败", payload_path.display()))?;
+
+        // 摘要校验：换因子等于换实验变量，必须能查出来。
+        let expected = manifest
+            .get("files")
+            .and_then(|files| files.get("expansion.json"))
+            .and_then(|file| file.get("sha256"))
+            .and_then(|sha| sha.as_str())
+            .unwrap_or("");
+        if !expected.is_empty() {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&payload);
+            let actual = format!("{:x}", hasher.finalize());
+            if actual != expected {
+                anyhow::bail!(
+                    "扩展工件 {} 的 sha256 与 manifest 不符（期望 {expected}，实际 {actual}）",
+                    payload_path.display()
+                );
+            }
+        }
+
+        let parsed: serde_json::Value = serde_json::from_slice(&payload)
+            .with_context(|| format!("解析 {} 失败", payload_path.display()))?;
+        let mut entries = std::collections::HashMap::new();
+        if let Some(map) = parsed.get("entries").and_then(|value| value.as_object()) {
+            for (term, rows) in map {
+                let mut list = Vec::new();
+                if let Some(rows) = rows.as_array() {
+                    for row in rows {
+                        let Some(pair) = row.as_array() else { continue };
+                        let (Some(neighbor), Some(conf)) = (
+                            pair.first().and_then(|value| value.as_str()),
+                            pair.get(1).and_then(|value| value.as_f64()),
+                        ) else {
+                            continue;
+                        };
+                        list.push((neighbor.to_string(), conf));
+                    }
+                }
+                entries.insert(term.clone(), list);
+            }
+        }
+        let default_top_k = manifest
+            .get("params")
+            .and_then(|params| params.get("top_k"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(5) as usize;
+        let source = manifest
+            .get("source")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        Ok(Self {
+            entries,
+            alpha,
+            top_k: top_k.unwrap_or(default_top_k),
+            source,
+            sha256: sha256_bytes_of(&payload),
+        })
+    }
+
+    /// 查一个 token 的扩展项（最多 `top_k` 条）。
+    fn expansions(&self, term: &str) -> &[(String, f64)] {
+        match self.entries.get(term) {
+            Some(list) => &list[..list.len().min(self.top_k)],
+            None => &[],
+        }
+    }
+}
+
+fn sha256_bytes_of(payload: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    format!("{:x}", hasher.finalize())
+}
+
 /// 外壳的打分算法选择。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scorer {
@@ -89,6 +192,7 @@ pub struct ShellAdapter {
     bow: Option<BowScorer>,
     oac: Option<OacScorer>,
     oac_params: OacParams,
+    expansion: Option<ExpansionTable>,
 }
 
 impl std::fmt::Debug for ShellAdapter {
@@ -127,6 +231,41 @@ impl ShellAdapter {
             }
         }
 
+        // 先验因子（可选）：地址来自 SL_EXPANSION_ARTIFACT；给了就消费，没给就退化成纯原词检索。
+        let expansion = match std::env::var("SL_EXPANSION_ARTIFACT") {
+            Ok(dir) => {
+                let alpha: f64 = std::env::var("SL_EXP_ALPHA")
+                    .unwrap_or_else(|_| "0.3".to_string())
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("SL_EXP_ALPHA 不是数字"))?;
+                if !alpha.is_finite() || alpha < 0.0 {
+                    anyhow::bail!("SL_EXP_ALPHA 必须是非负有限数");
+                }
+                let top_k = match std::env::var("SL_EXP_TOPK") {
+                    Ok(raw) => Some(
+                        raw.parse::<usize>()
+                            .map_err(|_| anyhow::anyhow!("SL_EXP_TOPK 不是正整数：{raw:?}"))?,
+                    ),
+                    Err(_) => None,
+                };
+                Some(ExpansionTable::load(std::path::Path::new(&dir), alpha, top_k)?)
+            }
+            Err(_) => None,
+        };
+        if let (Some(table), Some(obj)) = (expansion.as_ref(), config.as_object_mut()) {
+            obj.insert("prior_factor".into(), serde_json::json!({
+                "name": "query_expansion",
+                "kind": "token_confidence_list",
+                "source": table.source,
+                "sha256": table.sha256,
+                "alpha": table.alpha,
+                "top_k": table.top_k,
+                "entries": table.entries.len(),
+            }));
+        } else if let Some(obj) = config.as_object_mut() {
+            obj.insert("prior_factor".into(), serde_json::json!(null));
+        }
+
         Ok(Self {
             info: AdapterInfo::new(
                 name,
@@ -142,6 +281,7 @@ impl ShellAdapter {
             bow: None,
             oac: None,
             oac_params,
+            expansion,
         })
     }
 
@@ -218,6 +358,41 @@ fn oac_params_from_env() -> anyhow::Result<OacParams> {
     Ok(params)
 }
 
+impl ShellAdapter {
+    /// 查询 → 带权词项：原词权重 1.0，扩展词权重 `alpha × conf`。
+    ///
+    /// 扩展表按 **token 字符串** 建（与 tokenizer 无关），所以这里必须拿到字符串；
+    /// 只有词级 tokenizer 支持扩展（BPE 的 token 与扩展表的词不在同一空间，暂不支持）。
+    fn encode_weighted(&mut self, query: &str) -> Vec<WeightedTerm> {
+        match &mut self.tokenizer {
+            Tokenizer::Word(dict) => {
+                let terms = bm25_terms(query);
+                let mut weighted: Vec<WeightedTerm> = Vec::with_capacity(terms.len() * 2);
+                for term in &terms {
+                    let next = dict.len() as u32;
+                    let id = *dict.entry(term.clone()).or_insert(next);
+                    weighted.push((id, 1.0));
+                }
+                if let Some(table) = self.expansion.as_ref() {
+                    for term in &terms {
+                        for (neighbor, conf) in table.expansions(term) {
+                            // 扩展词必须在索引词表里才有意义；OOV 直接跳过。
+                            if let Some(&id) = dict.get(neighbor) {
+                                weighted.push((id, table.alpha * conf));
+                            }
+                        }
+                    }
+                }
+                weighted
+            }
+            Tokenizer::Qwen(tok) => {
+                // BPE 路径暂不支持扩展（字符串空间不同），保持纯原词行为。
+                tok.encode_ids(query).into_iter().map(|id| (id, 1.0)).collect()
+            }
+        }
+    }
+}
+
 impl Adapter for ShellAdapter {
     fn info(&self) -> &AdapterInfo {
         &self.info
@@ -237,15 +412,15 @@ impl Adapter for ShellAdapter {
     }
 
     fn search(&mut self, query: &str, k: usize) -> anyhow::Result<Vec<(String, f64)>> {
-        let ids = self.tokenizer.encode(query);
+        let weighted = self.encode_weighted(query);
         match self.scorer_kind {
             Scorer::Bow => {
                 let scorer = self.bow.as_ref().context("bow 未建索引（先调 index）")?;
-                Ok(scorer.search(&ids, k))
+                Ok(scorer.search(&weighted, k))
             }
             Scorer::Oac => {
                 let scorer = self.oac.as_mut().context("oac 未建索引（先调 index）")?;
-                Ok(scorer.search(&ids, k))
+                Ok(scorer.search(&weighted, k))
             }
         }
     }
