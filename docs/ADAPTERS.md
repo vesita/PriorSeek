@@ -19,6 +19,7 @@ bm25  faq-char  faq-bigram  faq-word  faq-hybrid  faq-bm25  rs
 | `faq-word` | `faq-scheme` | 同上 | jieba 词覆盖率 |
 | `faq-hybrid` | `faq-scheme` | 同上 | 词 2x + 双字 1x + 单字 0.3x |
 | `faq-bm25` | `faq-scheme` | 同上 | 双字 BM25（IDF + 长度归一；倒排检索） |
+| `bm25-llm` | `bm25` | `crates/sl-adapters/src/{bm25_llm,tokenizer_llm}.rs` | 同 `bm25` 公式，切分换成 **LLM BPE tokenizer**（Qwen2.5，151k 词表，非自研）；用于「只换 tokenizer」的单变量对照 |
 | `rs` | `relation-search` | `crates/sl-adapters/src/rs.rs` | `https://github.com/vesita/relation-search`（本机检出 `~/coding/my/relation-search`；Rust BM25 + 代码感知分词 + 内嵌 ast-grep），**子进程**接入 |
 
 ## 移植保真度（faq-*）
@@ -89,3 +90,26 @@ bm25  faq-char  faq-bigram  faq-word  faq-hybrid  faq-bm25  rs
 
 dense 检索、RRF 融合、cross-encoder 重排（`~/coding/my/docseek` 那套 hybrid + rerank）与
 端到端 RAG 评测，需要 embedding 模型 / reader 模型，按 [`docs/STANDARD.md`](STANDARD.md) §8 排期。
+
+## LLM tokenizer 组件（`tokenizer_llm`）
+
+不自研子词：直接把成熟 LLM 的 BPE 词表当内核的**字面层**。
+
+| 项 | 值 |
+|---|---|
+| tokenizer | `Qwen2.5-0.5B` 的 `tokenizer.json`（BPE，151,665 词表，中英文通用） |
+| 固化 | `tools/kernel/fetch_tokenizer.py qwen2.5-0.5b` → `data/vendor/tokenizers/qwen2.5-0.5b/`（**不进 git**） |
+| 完整性 | sha256 钉在 `fetch_tokenizer.py` 与同目录 `manifest.json`；`LlmTokenizer::from_path` 校验不符即报错 |
+| 双端一致 | Python（生成 fixture）与 Rust（运行时）读同一份文件；`tests/llm_tokenizer_parity.rs` 断言 **20 条用例的 token id 与 token 串逐位相同** |
+| 运行时 | 纯 CPU、离线；`AdapterInfo.config` 记录 `tokenizer_id` / `sha256` / `vocab_size` / `kind` |
+
+它带来的形态学共享是真实存在的（这正是词级切分缺的）：
+
+```text
+"monocytes" → [mon, ocytes]
+"monocyte"  → [mon, ocyte]          ← 共享 "mon"
+"inflammation" → [in, flamm, ation]
+```
+
+但**在纯词法 BM25 上它单独更差**（见 [`docs/RESULTS.md`](RESULTS.md) §11）：BPE 会拆出大量高频子词
+（`Ġthe`、`ation`、`mon`），IDF 被摊薄，而 BM25 恰恰依赖「稀有精确词」的区分度。

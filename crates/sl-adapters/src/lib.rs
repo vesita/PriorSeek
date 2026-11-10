@@ -11,20 +11,24 @@
 //! | `faq-char` / `faq-bigram` / `faq-word` / `faq-hybrid` / `faq-bm25` | 中文 FAQ 五方案（移植 faq-search） | [`faq`] |
 //! | `rs` | relation-search（Rust BM25 + ast-grep），子进程接入 | [`rs`] |
 //! | `seq` | token 时序相关度内核（BM25 主体 + 内核工件的时序边权） | [`seq`] |
+//! | `bm25-llm` | 同 BM25 公式，切分换成 **LLM BPE tokenizer**（不自研子词） | [`bm25_llm`] |
 //!
 //! 共享的清洗/切分点在 [`tokenize`]；中文语料相关的适用范围写在 [`faq`] 的模块文档里。
 
 use anyhow::{bail, Result};
 
 mod bm25;
+mod bm25_llm;
 mod faq;
 mod rs;
 mod seq;
 pub mod tokenize;
+pub mod tokenizer_llm;
 
 pub use bm25::Bm25Adapter;
 pub use faq::{FaqAdapter, Scheme};
 pub use rs::RelationSearchAdapter;
+pub use bm25_llm::Bm25LlmAdapter;
 pub use seq::SeqAdapter;
 
 /// 当前可用的适配器名（进 `sl run --adapters` 的取值），顺序即展示顺序。
@@ -38,6 +42,7 @@ pub fn names() -> Vec<&'static str> {
         "faq-bm25",
         "rs",
         "seq",
+        "bm25-llm",
     ]
 }
 
@@ -50,6 +55,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "bm25" => Box::new(Bm25Adapter::new()),
         "rs" => Box::new(RelationSearchAdapter::new()?),
         "seq" => Box::new(SeqAdapter::new()?),
+        "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
         other => match Scheme::from_name(other) {
             Some(scheme) => Box::new(FaqAdapter::new(scheme)),
             None => bail!("未知适配器 {other:?}；当前可用：{}", names().join(", ")),
@@ -74,7 +80,8 @@ mod tests {
                 "faq-hybrid",
                 "faq-bm25",
                 "rs",
-                "seq"
+                "seq",
+                "bm25-llm"
             ]
         );
         let unique: std::collections::BTreeSet<&str> = names().into_iter().collect();

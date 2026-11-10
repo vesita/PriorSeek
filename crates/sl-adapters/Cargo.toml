@@ -13,3 +13,4 @@ serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 jieba-rs.workspace = true
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }

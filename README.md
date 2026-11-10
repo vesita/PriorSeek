@@ -7,6 +7,7 @@
 - 内核设计（认知 token / token 关联 / 搜索权重，GPU 训练 + CPU 运行）：[`docs/KERNEL.md`](docs/KERNEL.md)
 - 参考项目笔记（借 nanoSeek / flowme 的实验纪律）：[`docs/REFERENCE_NOTES.md`](docs/REFERENCE_NOTES.md)
 - 数据集口径与构建：[`docs/DATASETS.md`](docs/DATASETS.md)
+- tokenizer 版本与规矩：[`docs/TOKENIZER.md`](docs/TOKENIZER.md)
 - 适配器清单与来源：[`docs/ADAPTERS.md`](docs/ADAPTERS.md)
 
 ## 方向：外壳明确，内核深度学习
@@ -76,6 +77,7 @@ results/        运行记录（不进 git）
 
 适配器：`bm25`、`faq-char`/`faq-bigram`/`faq-word`/`faq-hybrid`/`faq-bm25`（移植自
 `~/coding/hub/faq-search`）、`rs`（`~/coding/my/relation-search` 的 Rust BM25+ast-grep 代码检索）、
+`bm25-llm`（同 BM25 公式，切分换成 LLM 的 BPE tokenizer，用于单变量对照）、
 `seq`（内核第一版：token 化 + token 时序相关度，消费 `tools/kernel/` 产出的 `seq-v0` 工件；
 结果与消融见 [`docs/RESULTS.md`](docs/RESULTS.md) §8–§10）。
 
