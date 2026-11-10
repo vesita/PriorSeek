@@ -86,6 +86,31 @@ pub fn render_markdown(record: &RunRecord) -> String {
         ));
     }
 
+    // 查询命中率 / 缺失率：业务口径（「搜一次能不能找到」），与 recall 的分母无关。
+    if let Some(sample) = sample {
+        let hits: Vec<usize> = sample.metrics.hit.keys().copied().collect();
+        if !hits.is_empty() {
+            out.push_str("\n### 查询命中率 / 缺失率（miss = 1 − hit）\n\n");
+            out.push_str("| 适配器 |");
+            for k in &hits {
+                out.push_str(&format!(" hit@{k} | miss@{k} |"));
+            }
+            out.push_str("\n|---|");
+            for _ in &hits {
+                out.push_str("---:|---:|");
+            }
+            out.push('\n');
+            for adapter in &ordered {
+                out.push_str(&format!("| {} |", adapter.info.name));
+                for k in &hits {
+                    let hit = adapter.metrics.hit.get(k).copied().unwrap_or(0.0);
+                    out.push_str(&format!(" {:.4} | {:.4} |", hit, 1.0 - hit));
+                }
+                out.push('\n');
+            }
+        }
+    }
+
     let noisy: Vec<&AdapterResult> =
         record.adapters.iter().filter(|a| a.unknown_ids > 0 || a.duplicate_ids > 0).collect();
     if !noisy.is_empty() {
@@ -136,6 +161,8 @@ mod tests {
         let mut metrics = Metrics { mrr_at: 10, ndcg_at: 10, map_at: 100, ..Default::default() };
         metrics.recall.insert(1, 0.5);
         metrics.recall.insert(10, 0.9);
+        metrics.hit.insert(1, 0.8);
+        metrics.hit.insert(10, 0.95);
         metrics.ndcg = ndcg;
         metrics.mrr = 0.7;
         metrics.map = 0.6;

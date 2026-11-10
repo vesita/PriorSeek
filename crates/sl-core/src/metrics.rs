@@ -25,6 +25,9 @@ pub const DEFAULT_MAP_AT: usize = 100;
 pub struct Metrics {
     /// recall@k，键是 k。
     pub recall: BTreeMap<usize, f64>,
+    /// 查询命中率 `hit@k`：该查询的 top-k 里**至少有一条**相关文档的查询占比。
+    /// 缺失率 `miss@k = 1 − hit@k` —— 这是「用户搜一次能不能找到东西」的业务口径。
+    pub hit: BTreeMap<usize, f64>,
     pub mrr_at: usize,
     pub mrr: f64,
     pub ndcg_at: usize,
@@ -68,6 +71,7 @@ pub fn evaluate_rankings(
     let mut skipped = 0usize;
 
     let mut recall_sums: BTreeMap<usize, f64> = recall_ks.iter().map(|rk| (*rk, 0.0)).collect();
+    let mut hit_sums: BTreeMap<usize, f64> = recall_ks.iter().map(|rk| (*rk, 0.0)).collect();
     let mut mrr_sum = 0.0;
     let mut ndcg_sum = 0.0;
     let mut ap_sum = 0.0;
@@ -102,6 +106,8 @@ pub fn evaluate_rankings(
             let seen = top.iter().take(*rk).filter(|d| relevant.contains_key(d.as_str())).count();
             let value = seen as f64 / relevant.len() as f64;
             *recall_sums.get_mut(rk).expect("recall k 已初始化") += value;
+            // 命中率只看「有没有至少一条」，与 recall 的分母无关。
+            *hit_sums.get_mut(rk).expect("hit k 已初始化") += if seen > 0 { 1.0 } else { 0.0 };
         }
 
         let mrr = match first_rel_rank {
@@ -138,6 +144,7 @@ pub fn evaluate_rankings(
 
     let mut metrics = Metrics {
         recall: BTreeMap::new(),
+        hit: BTreeMap::new(),
         mrr_at,
         mrr: if scored == 0 { 0.0 } else { mrr_sum / scored as f64 },
         ndcg_at,
@@ -149,6 +156,9 @@ pub fn evaluate_rankings(
     };
     for (rk, sum) in recall_sums {
         metrics.recall.insert(rk, if scored == 0 { 0.0 } else { sum / scored as f64 });
+    }
+    for (rk, sum) in hit_sums {
+        metrics.hit.insert(rk, if scored == 0 { 0.0 } else { sum / scored as f64 });
     }
     per_query.sort_by(|a, b| a.qid.cmp(&b.qid));
     (metrics, per_query)
@@ -316,6 +326,19 @@ mod tests {
         assert_eq!(m.ndcg, 0.0);
         assert_eq!(m.map, 0.0);
         assert_eq!(m.queries_scored, 1);
+    }
+
+    #[test]
+    fn hit_rate_counts_queries_not_documents() {
+        // q1：两条相关文档都在前 3（recall@3 = 1.0, hit@1 = 1.0）
+        // q2：唯一相关文档在第 2（recall@1 = 0.0, hit@1 = 0.0）
+        let r = rankings(&[("q1", &["d1", "d2"]), ("q2", &["x", "d3"])]);
+        let rel = qrels(&[("q1", "d1", 1), ("q1", "d2", 1), ("q2", "d3", 1)]);
+        let (m, _) = evaluate_rankings(&r, &rel, 10);
+        assert_eq!(m.hit[&1], 0.5); // q1 命中、q2 未命中
+        assert_eq!(m.hit[&3], 1.0);
+        // q1 的 recall@1 是 0.5（两条相关只命中一条），hit@1 却是 1.0 —— 两者口径不同
+        assert_eq!(m.recall[&1], 0.25);
     }
 
     #[test]

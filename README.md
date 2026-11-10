@@ -77,7 +77,7 @@ results/        运行记录（不进 git）
 适配器：`bm25`、`faq-char`/`faq-bigram`/`faq-word`/`faq-hybrid`/`faq-bm25`（移植自
 `~/coding/hub/faq-search`）、`rs`（`~/coding/my/relation-search` 的 Rust BM25+ast-grep 代码检索）、
 `seq`（内核第一版：token 化 + token 时序相关度，消费 `tools/kernel/` 产出的 `seq-v0` 工件；
-结果与消融见 [`docs/RESULTS.md`](docs/RESULTS.md) §8）。
+结果与消融见 [`docs/RESULTS.md`](docs/RESULTS.md) §8–§10）。
 
 phase 2/3 的范围与「为什么 LongBench / RULER / Natural Questions 不能混在一张表里」见
 [`docs/STANDARD.md`](docs/STANDARD.md) §2。
