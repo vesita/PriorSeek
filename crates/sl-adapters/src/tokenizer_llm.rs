@@ -87,8 +87,9 @@ impl LlmTokenizer {
             }
         }
 
-        let inner = tokenizers::Tokenizer::from_file(path)
-            .map_err(|err| anyhow::anyhow!("解析 tokenizer.json 失败（{}）：{err}", path.display()))?;
+        let inner = tokenizers::Tokenizer::from_file(path).map_err(|err| {
+            anyhow::anyhow!("解析 tokenizer.json 失败（{}）：{err}", path.display())
+        })?;
         let vocab_size = inner.get_vocab_size(true);
         let id = path
             .parent()
@@ -96,7 +97,13 @@ impl LlmTokenizer {
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_else(|| DEFAULT_TOKENIZER_ID.to_string());
 
-        Ok(Self { inner, id, sha256, vocab_size, path: path.to_path_buf() })
+        Ok(Self {
+            inner,
+            id,
+            sha256,
+            vocab_size,
+            path: path.to_path_buf(),
+        })
     }
 
     /// 切分并返回 token id 序列。**不加特殊 token**（BOS/EOS 对检索是噪声）。
@@ -110,7 +117,11 @@ impl LlmTokenizer {
     /// 切分并返回 token 字符串（调试 / 报告用；索引与检索都用 [`Self::encode_ids`]）。
     pub fn encode_tokens(&self, text: &str) -> Vec<String> {
         match self.inner.encode(text, false) {
-            Ok(encoding) => encoding.get_tokens().iter().map(|t| t.to_string()).collect(),
+            Ok(encoding) => encoding
+                .get_tokens()
+                .iter()
+                .map(|t| t.to_string())
+                .collect(),
             Err(_) => Vec::new(),
         }
     }
@@ -157,7 +168,10 @@ mod tests {
         let a = tok.encode_tokens("monocytes");
         let b = tok.encode_tokens("monocyte");
         let shared = a.iter().filter(|t| b.contains(t)).count();
-        assert!(shared >= 1, "monocytes 与 monocyte 应至少共享一个子词：{a:?} vs {b:?}");
+        assert!(
+            shared >= 1,
+            "monocytes 与 monocyte 应至少共享一个子词：{a:?} vs {b:?}"
+        );
     }
 
     #[test]

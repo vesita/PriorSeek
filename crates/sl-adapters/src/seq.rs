@@ -212,9 +212,15 @@ impl SeqAdapter {
 
         let mut config = params.to_json();
         if let Some(obj) = config.as_object_mut() {
-            obj.insert("artifact_dir".into(), serde_json::json!(artifact_dir.display().to_string()));
+            obj.insert(
+                "artifact_dir".into(),
+                serde_json::json!(artifact_dir.display().to_string()),
+            );
             obj.insert("artifact_id".into(), serde_json::json!(artifact.id));
-            obj.insert("weights_origin".into(), serde_json::json!(artifact.weights_origin));
+            obj.insert(
+                "weights_origin".into(),
+                serde_json::json!(artifact.weights_origin),
+            );
             obj.insert("k1".into(), serde_json::json!(K1));
             obj.insert("b".into(), serde_json::json!(B));
             obj.insert(
@@ -225,7 +231,7 @@ impl SeqAdapter {
         let info = AdapterInfo::new(
             "seq",
             "seq-kernel",
-            "0.1.0",
+            "0.2.0",
             "外壳：本仓 crates/sl-adapters/src/seq.rs；内核：tools/kernel/build_seq.py 产出的 seq-v0 工件（PPMI 时序边权，语料内统计）",
         )
         .with_config(config)
@@ -268,7 +274,10 @@ fn resolve_artifact_dir() -> anyhow::Result<PathBuf> {
             "seq 适配器需要工件目录：设置 SL_SEQ_ARTIFACT，或由 `sl run` 提供 SL_DATA_DIR/SL_DATASET。\n构建工件：uv run python tools/kernel/build_seq.py <dataset>"
         )
     })?;
-    Ok(Path::new(&data_dir).join(dataset).join("artifacts").join("seq-v0"))
+    Ok(Path::new(&data_dir)
+        .join(dataset)
+        .join("artifacts")
+        .join("seq-v0"))
 }
 
 // ---------------------------------------------------------------------------
@@ -309,8 +318,9 @@ fn read_f32(buf: &[u8], pos: &mut usize) -> anyhow::Result<f32> {
 fn load_artifact(dir: &Path) -> anyhow::Result<SeqData> {
     let seq_bytes = std::fs::read(dir.join("seq.bin"))
         .map_err(|err| anyhow::anyhow!("读取 {} 失败：{err}", dir.join("seq.bin").display()))?;
-    let doc_bytes = std::fs::read(dir.join("doc_tokens.bin"))
-        .map_err(|err| anyhow::anyhow!("读取 {} 失败：{err}", dir.join("doc_tokens.bin").display()))?;
+    let doc_bytes = std::fs::read(dir.join("doc_tokens.bin")).map_err(|err| {
+        anyhow::anyhow!("读取 {} 失败：{err}", dir.join("doc_tokens.bin").display())
+    })?;
 
     let mut pos = 0usize;
     let magic = seq_bytes
@@ -329,7 +339,10 @@ fn load_artifact(dir: &Path) -> anyhow::Result<SeqData> {
         let raw = seq_bytes
             .get(pos..end)
             .ok_or_else(|| anyhow::anyhow!("seq.bin 词表在偏移 {pos} 处越界"))?;
-        vocab.push(String::from_utf8(raw.to_vec()).map_err(|_| anyhow::anyhow!("词表条目不是合法 UTF-8"))?);
+        vocab.push(
+            String::from_utf8(raw.to_vec())
+                .map_err(|_| anyhow::anyhow!("词表条目不是合法 UTF-8"))?,
+        );
         pos = end;
     }
     let mut idf = Vec::with_capacity(vocab_len);
@@ -348,11 +361,17 @@ fn load_artifact(dir: &Path) -> anyhow::Result<SeqData> {
         }
     }
     if pos != seq_bytes.len() {
-        anyhow::bail!("seq.bin 尾部有 {} 字节未消费（格式与适配器不一致）", seq_bytes.len() - pos);
+        anyhow::bail!(
+            "seq.bin 尾部有 {} 字节未消费（格式与适配器不一致）",
+            seq_bytes.len() - pos
+        );
     }
 
-    let vocab_index: HashMap<String, u32> =
-        vocab.iter().enumerate().map(|(idx, token)| (token.clone(), idx as u32)).collect();
+    let vocab_index: HashMap<String, u32> = vocab
+        .iter()
+        .enumerate()
+        .map(|(idx, token)| (token.clone(), idx as u32))
+        .collect();
 
     let mut pos = 0usize;
     let magic = doc_bytes
@@ -378,7 +397,11 @@ fn load_artifact(dir: &Path) -> anyhow::Result<SeqData> {
 
     let docs_text = std::fs::read_to_string(dir.join("docs.txt"))
         .map_err(|err| anyhow::anyhow!("读取 {} 失败：{err}", dir.join("docs.txt").display()))?;
-    let docs: Vec<String> = docs_text.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect();
+    let docs: Vec<String> = docs_text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
     if docs.len() != doc_tokens.len() {
         anyhow::bail!(
             "docs.txt 有 {} 行，doc_tokens.bin 有 {} 篇——工件内部不一致",
@@ -387,7 +410,14 @@ fn load_artifact(dir: &Path) -> anyhow::Result<SeqData> {
         );
     }
 
-    Ok(SeqData { vocab, vocab_index, idf, edges, docs, doc_tokens })
+    Ok(SeqData {
+        vocab,
+        vocab_index,
+        idf,
+        edges,
+        docs,
+        doc_tokens,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -449,11 +479,18 @@ impl Adapter for SeqAdapter {
                 *tf.entry(token).or_insert(0) += 1;
             }
             for (token, count) in tf {
-                self.postings[token as usize].push(Posting { doc: dataset_idx as u32, tf: count });
+                self.postings[token as usize].push(Posting {
+                    doc: dataset_idx as u32,
+                    tf: count,
+                });
             }
             self.doc_tokens.push(tokens);
         }
-        self.avg_len = if docs.is_empty() { 0.0 } else { total_len as f64 / docs.len() as f64 };
+        self.avg_len = if docs.is_empty() {
+            0.0
+        } else {
+            total_len as f64 / docs.len() as f64
+        };
         Ok(())
     }
 
@@ -520,7 +557,10 @@ impl Adapter for SeqAdapter {
             for idx in 0..sequence.len() - step {
                 let a = sequence[idx];
                 let b = sequence[idx + step];
-                if pairs.iter().any(|(pa, pb, po, _)| *pa == a && *pb == b && *po == order) {
+                if pairs
+                    .iter()
+                    .any(|(pa, pb, po, _)| *pa == a && *pb == b && *po == order)
+                {
                     continue;
                 }
                 if let Some(&weight) = self.data.edges.get(&(a, b, order)) {
@@ -566,12 +606,20 @@ impl Adapter for SeqAdapter {
                 }
                 let mut seq_score = 0.0;
                 for ((a, b, _order), weight) in &pair_weights {
-                    let Some(pos_a) = self.positions.get(a) else { continue };
-                    let Some(pos_b) = self.positions.get(b) else { continue };
+                    let Some(pos_a) = self.positions.get(a) else {
+                        continue;
+                    };
+                    let Some(pos_b) = self.positions.get(b) else {
+                        continue;
+                    };
                     let mut matches = 0usize;
                     for &pa in pos_a {
                         for &pb in pos_b {
-                            let hit = if ordered { pa < pb && pb - pa <= window } else { pa != pb && pa.abs_diff(pb) <= window };
+                            let hit = if ordered {
+                                pa < pb && pb - pa <= window
+                            } else {
+                                pa != pb && pa.abs_diff(pb) <= window
+                            };
                             if hit {
                                 matches += 1;
                                 if matches >= max_matches {
@@ -623,7 +671,9 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// 按工件格式手工写一个小工件到临时目录，返回目录。
@@ -696,7 +746,10 @@ mod tests {
             "license": "test",
             "notes": ""
         });
-        std::fs::write(dir.join("manifest.json"), serde_json::to_vec_pretty(&manifest)?)?;
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest)?,
+        )?;
         Ok(())
     }
 
@@ -725,12 +778,19 @@ mod tests {
         let mut adapter = build_adapter(tmp.path());
         // λ=0：只剩单字项
         adapter.params.lambda_seq = 0.0;
-        adapter.index(&[Doc::new("d1", "a b c"), Doc::new("d2", "c a")]).unwrap();
+        adapter
+            .index(&[Doc::new("d1", "a b c"), Doc::new("d2", "c a")])
+            .unwrap();
         let hits = adapter.search("a b", 10).unwrap();
         assert_eq!(hits[0].0, "d1");
         // d1: a/b 各 tf=1，len=3，avg=2.5
         let expected = hand_score(&[1, 1], 3, 2.5, 0.0, 0.0);
-        assert!((hits[0].1 - expected).abs() < 1e-9, "got {} want {}", hits[0].1, expected);
+        assert!(
+            (hits[0].1 - expected).abs() < 1e-9,
+            "got {} want {}",
+            hits[0].1,
+            expected
+        );
         // d2 只命中 a
         let expected_d2 = hand_score(&[1], 2, 2.5, 0.0, 0.0);
         assert!((hits[1].1 - expected_d2).abs() < 1e-9);
@@ -742,11 +802,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_fixture(tmp.path(), &[("d1", vec![0, 1, 2]), ("d2", vec![2, 0])]).unwrap();
         let mut adapter = build_adapter(tmp.path());
-        adapter.index(&[Doc::new("d1", "a b c"), Doc::new("d2", "c a")]).unwrap();
+        adapter
+            .index(&[Doc::new("d1", "a b c"), Doc::new("d2", "c a")])
+            .unwrap();
         let hits = adapter.search("a b", 10).unwrap();
         // d1: a 在 0、b 在 1（距离 1 ≤ window 8）→ 匹配 1 次 → sat=1 → seq = 1.0
         let expected = hand_score(&[1, 1], 3, 2.5, 1.0, 0.5);
-        assert!((hits[0].1 - expected).abs() < 1e-9, "got {} want {}", hits[0].1, expected);
+        assert!(
+            (hits[0].1 - expected).abs() < 1e-9,
+            "got {} want {}",
+            hits[0].1,
+            expected
+        );
         // d2 无 b，seq=0
         let expected_d2 = hand_score(&[1], 2, 2.5, 0.0, 0.5);
         assert!((hits[1].1 - expected_d2).abs() < 1e-9);
@@ -795,7 +862,10 @@ mod tests {
         let hit = adapter.search("a b", 10).unwrap()[0].1;
         adapter.params.window = 3;
         let miss = adapter.search("a b", 10).unwrap()[0].1;
-        assert!(hit > miss, "window=4 应命中距离 4 的匹配，window=3 不应（{hit} vs {miss}）");
+        assert!(
+            hit > miss,
+            "window=4 应命中距离 4 的匹配，window=3 不应（{hit} vs {miss}）"
+        );
     }
 
     #[test]

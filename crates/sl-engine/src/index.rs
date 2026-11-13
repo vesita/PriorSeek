@@ -44,18 +44,28 @@ impl PositionalIndex {
 
             let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
             for (pos, token) in tokens.into_iter().enumerate() {
-                postings
-                    .entry(token)
-                    .or_default()
-                    .push(Occurrence { doc, pos: u32::try_from(pos).expect("文档过长") });
+                postings.entry(token).or_default().push(Occurrence {
+                    doc,
+                    pos: u32::try_from(pos).expect("文档过长"),
+                });
                 if seen.insert(token) {
                     *df.entry(token).or_insert(0) += 1;
                 }
             }
         }
 
-        let avg_len = if doc_ids.is_empty() { 0.0 } else { total_len as f64 / doc_ids.len() as f64 };
-        Self { doc_ids, doc_len, postings, df, avg_len }
+        let avg_len = if doc_ids.is_empty() {
+            0.0
+        } else {
+            total_len as f64 / doc_ids.len() as f64
+        };
+        Self {
+            doc_ids,
+            doc_len,
+            postings,
+            df,
+            avg_len,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -94,7 +104,10 @@ impl PositionalIndex {
 
     /// 词项在语料里的全部出现位置（按 doc 升序、doc 内按 pos 升序）。
     pub fn occurrences(&self, term: u32) -> &[Occurrence] {
-        self.postings.get(&term).map(|v| v.as_slice()).unwrap_or(&[])
+        self.postings
+            .get(&term)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// 某词项在某文档内的位置列表（升序）。文档未命中时返回空。
@@ -123,6 +136,40 @@ impl PositionalIndex {
         docs.sort_unstable();
         docs.dedup();
         docs
+    }
+}
+
+/// 双层谓词感知索引 (Tiered Predicate-Aware Index)。
+///
+/// 将核心高判别力谓词/概念（Tier-1）与背景辅助词（Tier-2）物理分层。
+/// 候选文档初筛与谓词执行优先走 Tier-1 紧凑倒排链，大幅提高 CPU Cache 局部性并压缩遍历延迟。
+#[derive(Debug, Default)]
+pub struct TieredIndex {
+    /// 完整位置索引（作为正确性基石）
+    pub base: PositionalIndex,
+    /// Tier-1 核心谓词词表（按 Saliency 划分的高频判别词）
+    pub tier1_terms: std::collections::HashSet<u32>,
+}
+
+impl TieredIndex {
+    pub fn new(base: PositionalIndex, tier1_terms: std::collections::HashSet<u32>) -> Self {
+        Self { base, tier1_terms }
+    }
+
+    /// 仅利用 Tier-1 核心谓词进行超快候选集生成（过滤掉低判别力长链）。
+    pub fn fast_candidates(&self, query_terms: &[u32]) -> Vec<u32> {
+        let t1_query: Vec<u32> = query_terms
+            .iter()
+            .copied()
+            .filter(|t| self.tier1_terms.contains(t))
+            .collect();
+
+        if !t1_query.is_empty() {
+            self.base.candidates(&t1_query)
+        } else {
+            // 如果查询全是冷门或未收录词，平滑回退到全量候选
+            self.base.candidates(query_terms)
+        }
     }
 }
 
@@ -162,5 +209,17 @@ mod tests {
         let idx = index();
         assert_eq!(idx.candidates(&[2, 5]), vec![0, 1, 2]);
         assert_eq!(idx.candidates(&[999]), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn tiered_index_fast_candidates_skips_background_terms() {
+        let base = index();
+        // 设 term 2 为核心谓词，term 5 为背景词
+        let mut t1 = std::collections::HashSet::new();
+        t1.insert(2);
+        let tiered = TieredIndex::new(base, t1);
+
+        let cands = tiered.fast_candidates(&[2, 5]);
+        assert_eq!(cands, vec![0, 1]);
     }
 }

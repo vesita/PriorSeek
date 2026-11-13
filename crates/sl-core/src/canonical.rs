@@ -36,7 +36,10 @@ pub fn file_digest(path: &Path) -> Result<FileDigest> {
     let bytes = fs::read(path).with_context(|| format!("读取 {} 失败", path.display()))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    Ok(FileDigest { sha256: format!("{:x}", hasher.finalize()), bytes: bytes.len() as u64 })
+    Ok(FileDigest {
+        sha256: format!("{:x}", hasher.finalize()),
+        bytes: bytes.len() as u64,
+    })
 }
 
 /// 把一份内存里的 `Dataset` 落成规范目录，并写 manifest（摘要与规模按实际内容重算）。
@@ -71,7 +74,10 @@ pub fn write_dataset(dataset: &Dataset, dir: &Path, mut manifest: Manifest) -> R
     Ok(manifest)
 }
 
-fn write_jsonl<T: serde::Serialize, I: IntoIterator<Item = T>>(path: PathBuf, rows: I) -> Result<()> {
+fn write_jsonl<T: serde::Serialize, I: IntoIterator<Item = T>>(
+    path: PathBuf,
+    rows: I,
+) -> Result<()> {
     let file = File::create(&path).with_context(|| format!("创建 {} 失败", path.display()))?;
     let mut out = BufWriter::new(file);
     for row in rows {
@@ -101,19 +107,32 @@ fn write_qrels(path: PathBuf, qrels: &Qrels) -> Result<()> {
 /// 看起来可比而实际不可比。
 pub fn load_dataset(dir: &Path) -> Result<Loaded> {
     let manifest_path = dir.join(MANIFEST_FILE);
-    let manifest: Manifest = serde_json::from_str(
-        &fs::read_to_string(&manifest_path)
-            .with_context(|| format!("读 {} 失败（先跑 `sl dataset build`）", manifest_path.display()))?,
-    )
-    .with_context(|| format!("解析 {} 失败", manifest_path.display()))?;
+    let manifest: Manifest =
+        serde_json::from_str(&fs::read_to_string(&manifest_path).with_context(|| {
+            format!(
+                "读 {} 失败（先跑 `sl dataset build`）",
+                manifest_path.display()
+            )
+        })?)
+        .with_context(|| format!("解析 {} 失败", manifest_path.display()))?;
 
     let docs: Vec<Doc> = read_jsonl(&dir.join(CORPUS_FILE))?;
     let queries: Vec<Query> = read_jsonl(&dir.join(QUERIES_FILE))?;
     let qrels = read_qrels(&dir.join(QRELS_FILE))?;
 
-    let mut dataset = Dataset { name: manifest.name.clone(), docs, queries, qrels, manifest };
+    let mut dataset = Dataset {
+        name: manifest.name.clone(),
+        docs,
+        queries,
+        qrels,
+        manifest,
+    };
     let pruned = dataset.prune_inconsistent();
-    Ok(Loaded { dataset, pruned, dir: dir.to_path_buf() })
+    Ok(Loaded {
+        dataset,
+        pruned,
+        dir: dir.to_path_buf(),
+    })
 }
 
 fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
@@ -133,6 +152,10 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
 }
 
 fn read_qrels(path: &Path) -> Result<Qrels> {
+    read_qrels_for(path, |_| true)
+}
+
+fn read_qrels_for(path: &Path, include_qid: impl Fn(&str) -> bool) -> Result<Qrels> {
     let file = File::open(path).with_context(|| format!("打开 {} 失败", path.display()))?;
     let reader = BufReader::new(file);
     let mut qrels: Qrels = BTreeMap::new();
@@ -144,16 +167,29 @@ fn read_qrels(path: &Path) -> Result<Qrels> {
         }
         let mut parts = line.split('\t');
         let (Some(qid), Some(docid), Some(rel)) = (parts.next(), parts.next(), parts.next()) else {
-            bail!("{} 第 {} 行不是 qid\\tdocid\\trel：{line}", path.display(), lineno + 1);
+            bail!(
+                "{} 第 {} 行不是 qid\\tdocid\\trel：{line}",
+                path.display(),
+                lineno + 1
+            );
         };
         if lineno == 0 && qid == "qid" {
             continue;
         }
-        let rel: u32 = rel
-            .trim()
-            .parse()
-            .with_context(|| format!("{} 第 {} 行 rel 不是整数：{rel}", path.display(), lineno + 1))?;
-        qrels.entry(qid.to_string()).or_default().insert(docid.to_string(), rel);
+        if !include_qid(qid) {
+            continue;
+        }
+        let rel: u32 = rel.trim().parse().with_context(|| {
+            format!(
+                "{} 第 {} 行 rel 不是整数：{rel}",
+                path.display(),
+                lineno + 1
+            )
+        })?;
+        qrels
+            .entry(qid.to_string())
+            .or_default()
+            .insert(docid.to_string(), rel);
     }
     Ok(qrels)
 }
@@ -171,13 +207,24 @@ pub struct TrainSplit {
 impl TrainSplit {
     /// 参与计分的训练查询数（至少一个正例）。
     pub fn scored_queries(&self) -> usize {
-        self.qrels.values().filter(|map| map.values().any(|rel| *rel > 0)).count()
+        self.qrels
+            .values()
+            .filter(|map| map.values().any(|rel| *rel > 0))
+            .count()
     }
 }
 
 /// 读取可选的 train split。没有 train 文件时返回 `Ok(None)`；
 /// 有文件但摘要不符/格式不对时报错（不允许「静默降级成没有训练数据」）。
 pub fn load_train_split(dir: &Path) -> Result<Option<TrainSplit>> {
+    load_train_split_for(dir, |_| true)
+}
+
+/// 按查询谓词读取训练文件；摘要始终校验整个文件，qrels 只解析匹配 qid 的行。
+pub fn load_train_split_for(
+    dir: &Path,
+    include_qid: impl Fn(&str) -> bool,
+) -> Result<Option<TrainSplit>> {
     let queries_path = dir.join(TRAIN_QUERIES_FILE);
     let qrels_path = dir.join(TRAIN_QRELS_FILE);
     if !queries_path.exists() && !qrels_path.exists() {
@@ -216,9 +263,25 @@ pub fn load_train_split(dir: &Path) -> Result<Option<TrainSplit>> {
         }
     }
 
-    let queries: Vec<Query> = read_jsonl(&queries_path)?;
-    let qrels = read_qrels(&qrels_path)?;
-    Ok(Some(TrainSplit { queries, qrels, digests }))
+    let queries: Vec<Query> = read_jsonl::<Query>(&queries_path)?
+        .into_iter()
+        .filter(|query| include_qid(&query.id))
+        .collect();
+    let qrels = read_qrels_for(&qrels_path, &include_qid)?;
+    let query_ids: std::collections::BTreeSet<&str> =
+        queries.iter().map(|query| query.id.as_str()).collect();
+    let qrel_ids: std::collections::BTreeSet<&str> = qrels.keys().map(String::as_str).collect();
+    anyhow::ensure!(
+        query_ids == qrel_ids,
+        "筛选后的 train query/qrels qid 不一致（query {} / qrels {}）",
+        query_ids.len(),
+        qrel_ids.len()
+    );
+    Ok(Some(TrainSplit {
+        queries,
+        qrels,
+        digests,
+    }))
 }
 
 /// `load_dataset` 的结果：数据集本体 + 契约清理报告 + 目录。
@@ -282,10 +345,21 @@ mod tests {
 
     fn sample_dataset() -> Dataset {
         let docs = vec![
-            Doc { id: "d1".into(), title: String::new(), text: "alpha beta".into() },
-            Doc { id: "d2".into(), title: "标题".into(), text: "gamma delta".into() },
+            Doc {
+                id: "d1".into(),
+                title: String::new(),
+                text: "alpha beta".into(),
+            },
+            Doc {
+                id: "d2".into(),
+                title: "标题".into(),
+                text: "gamma delta".into(),
+            },
         ];
-        let queries = vec![Query { id: "q1".into(), text: "alpha".into() }];
+        let queries = vec![Query {
+            id: "q1".into(),
+            text: "alpha".into(),
+        }];
         let mut qrels: Qrels = BTreeMap::new();
         qrels.entry("q1".into()).or_default().insert("d1".into(), 1);
         Dataset {
@@ -327,11 +401,71 @@ mod tests {
     }
 
     #[test]
+    fn train_split_predicate_skips_other_qid_labels_but_checks_file_digest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dataset = sample_dataset();
+        write_dataset(&dataset, tmp.path(), dataset.manifest.clone()).unwrap();
+        let train_queries = r#"{"id":"train-q","text":"alpha"}
+{"id":"valid-q","text":"beta"}
+"#;
+        let train_qrels = "qid\tdocid\trel\ntrain-q\td1\t1\nvalid-q\td2\tnot-an-integer\n";
+        fs::write(tmp.path().join(TRAIN_QUERIES_FILE), train_queries).unwrap();
+        fs::write(tmp.path().join(TRAIN_QRELS_FILE), train_qrels).unwrap();
+        let mut manifest: Manifest =
+            serde_json::from_slice(&fs::read(tmp.path().join(MANIFEST_FILE)).unwrap()).unwrap();
+        manifest.train_files.insert(
+            TRAIN_QUERIES_FILE.into(),
+            file_digest(&tmp.path().join(TRAIN_QUERIES_FILE)).unwrap(),
+        );
+        manifest.train_files.insert(
+            TRAIN_QRELS_FILE.into(),
+            file_digest(&tmp.path().join(TRAIN_QRELS_FILE)).unwrap(),
+        );
+        fs::write(
+            tmp.path().join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let train = load_train_split_for(tmp.path(), |qid| qid == "train-q")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            train
+                .queries
+                .iter()
+                .map(|q| q.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["train-q"]
+        );
+        assert_eq!(
+            train.qrels.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["train-q"]
+        );
+        assert!(load_train_split_for(tmp.path(), |qid| qid == "valid-q").is_err());
+
+        fs::write(
+            tmp.path().join(TRAIN_QRELS_FILE),
+            "qid\tdocid\trel\ntrain-q\td1\t2\nvalid-q\td2\tnot-an-integer\n",
+        )
+        .unwrap();
+        assert!(load_train_split_for(tmp.path(), |qid| qid == "train-q").is_err());
+    }
+
+    #[test]
     fn qrels_pointing_at_missing_docs_are_pruned_and_reported() {
         let tmp = tempfile::tempdir().unwrap();
         let mut dataset = sample_dataset();
-        dataset.qrels.entry("q1".into()).or_default().insert("nope".into(), 1);
-        dataset.qrels.entry("q-missing".into()).or_default().insert("d1".into(), 1);
+        dataset
+            .qrels
+            .entry("q1".into())
+            .or_default()
+            .insert("nope".into(), 1);
+        dataset
+            .qrels
+            .entry("q-missing".into())
+            .or_default()
+            .insert("d1".into(), 1);
         write_dataset(&dataset, tmp.path(), dataset.manifest.clone()).unwrap();
 
         let loaded = load_dataset(tmp.path()).unwrap();
@@ -346,17 +480,30 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dataset = sample_dataset();
         write_dataset(&dataset, tmp.path(), dataset.manifest.clone()).unwrap();
-        fs::write(tmp.path().join(CORPUS_FILE), "{\"id\":\"d1\",\"text\":\"tampered\"}\n").unwrap();
+        fs::write(
+            tmp.path().join(CORPUS_FILE),
+            "{\"id\":\"d1\",\"text\":\"tampered\"}\n",
+        )
+        .unwrap();
 
         let loaded = load_dataset(tmp.path()).unwrap();
-        assert_eq!(loaded.digest_mismatches().unwrap(), vec![CORPUS_FILE.to_string()]);
+        assert_eq!(
+            loaded.digest_mismatches().unwrap(),
+            vec![CORPUS_FILE.to_string()]
+        );
         assert!(loaded.verify_strict().is_err());
     }
 
     #[test]
     fn fingerprint_ignores_prose_fields() {
         let mut a = sample_dataset().manifest;
-        a.files.insert("corpus.jsonl".into(), FileDigest { sha256: "x".into(), bytes: 1 });
+        a.files.insert(
+            "corpus.jsonl".into(),
+            FileDigest {
+                sha256: "x".into(),
+                bytes: 1,
+            },
+        );
         a.counts.docs = 2;
         let mut b = a.clone();
         b.built_by = "another".into();

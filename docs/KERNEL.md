@@ -142,6 +142,13 @@ KernelArtifact {
 }
 ```
 
+**先验因子的两条硬约束**（由 `sl_core::types::PriorFactor` 强制，强制点登记在 `docs/STANDARD.md` §11）：
+
+1. **`kind` 是封闭集合**：`token_confidence_list` / `concept` / `field`。新增一种要同时改类型、工件构建器与消费它的外壳，否则解析期直接失败。
+2. **只许表达证据，不许表达用法**：`alpha` / `weight` / `top_k` 这类描述「怎么用」的字段一律被拒绝——用法归外壳的算法超参，这样换外壳不必重定因子。
+
+因子字段缺失或为 `null` 表示该工件不提供因子，外壳据此走无因子路径。
+
 - `AdapterInfo` 增加 `artifacts: [KernelArtifact]`，写进 `run.json`；报告里显示工件哈希前 12 位。
 - 工件缺失 / 哈希不符 → 构造适配器时直接失败（同 rs 二进制的处理）。
 - `sl artifact verify <run.json>` 离线复核（换机器后确认工件没被换掉）。
@@ -301,8 +308,108 @@ doc_tokens.bin（小端）：
   网络参数量 0）。固定 alpha 总体变差（nDCG 0.6647→0.6460），但**硬漏子集 31 条救回 5 条**；
   逐查询 oracle 上限 **+2.36pp nDCG / +2.33pp hit@10**（超过 Δ_min=1.43pp）⇒ 方向可判定，
   且只有约 9% 查询适合扩展 ⇒ 必须学**逐查询/逐 token 置信度**（P1），不能用全局 alpha。
+- **语法（词性）因子已试并证伪**（`docs/RESULTS.md` §19）：在 train split 的 heldout 上，
+  `w(t) = Σ_k p(k|t)·λ_k`（k = UPOS 17 类，λ 在 outer-train 拟合）的 Δ nDCG@10 = **−0.00018**，
+  低于「df 分层置换」对照的 +0.01505 ⇒ 增益可被「任意 df 保序分箱 + K 个自由乘子」完整解释。
+  随后又测了**结构匹配**用法（`docs/RESULTS.md` §21）：只用词性筛出「构成短语」的查询相邻对
+  （ADJ+NOUN、NOUN+NOUN 等）给相邻性奖励，Δ = **+0.00011**，且不如「随机抽同样数量的相邻对」
+  （−0.00255）⇒ 也是零。**语法因子（乘子 / 结构匹配两种用法）均不进外壳**；
+  查询路由与谓词门控未测。
+  **不过这两节的代理精度随后被测过（`docs/RESULTS.md` §22）：词形级查表在 EWT test 上
+  89.47%、CRAFT 域内 95.20%；为此新建的上下文标注器达到 EWT 91.91% / CRAFT 96.70%，
+  仍**未通过**「EWT ≥95% 且 CRAFT ≥97%」的验收门槛，因此逐次词性的检索实验未运行。
+  ⇒ 词性这条线的状态是「证据为负、且工具不足」，**不能**判为「词性无用」。
 - **kernel v1.1 已试**（`docs/PREREG-M2b.md`、`docs/RESULTS.md` §10）：目标改成业务口径的
   **搜索缺失率**、优化方式改成**精确网格搜索**（不用代理损失），train 上 1402 个网格点最多多命中
   1 条查询，test 上 **0 条查询的命中状态变化**（Δhit@10 = 0.0000）。
   ⇒ 结论：**2 个加性时序权重对「救漏」没有作用**；缺失率的两类来源（重排可救 9.3%、词汇不匹配 10.3%）
   分别指向重排层与召回/表示层，**不属于「内核只学时序关联」的范围**。
+
+## 10. 概念归并内核（`concept-v0`）：先验因子由**学习**产出
+
+这是第一个「因子由学到的权重决定」的内核：先验因子的内容不是统计量的直接复制，
+而是一个带参数的判定谓词在语料上的输出。结果见 [`docs/RESULTS.md`](RESULTS.md) §15。
+
+### 10.1 边界：什么是固定的，什么是学出来的
+
+| 层 | 内容 | 谁决定 |
+|---|---|---|
+| 候选对空间 | 共享前缀 ≥ 较长词的 `lcp_ratio`（默认 0.7）、`len ≥ 4`、长度差 ≤ 8 | **结构约束**（语言无关，不可学习） |
+| 特征 | `p_t_given_u` / `p_u_given_t` / `jaccard` / `log_df_ratio` / `len_ratio` / `extra_chars` / `tf_cosine` / `ppmi` | 语料统计（无监督） |
+| 判定 | `merge(t,u) = σ(w·x + b) ≥ 0.5` | **内核网络**：`w`、`b` 在 outer-train 上学出来 |
+| 归并结果 | `token → 规范形式`（组内 df 最大者为规范形式） | 谓词在语料上的输出 = **先验因子** |
+| 怎么用 | 硬归并、是否叠加字段加权 | 外壳（算法超参） |
+
+没有任何英文后缀表：`-s` / `-ed` / `-ing` 这类知识要么出现在学到的 `w` 里，要么根本不出现。
+参数量 = 8 + 1 = **9**，在 `AGENTS.md` 定的 ≤10k 预算内。
+
+候选空间用**共享前缀比例**而不是「严格前缀」，是因为严格前缀同时犯两个错：放进
+`the`/`therapies` 这种毫无形态关系的对（内容词被并进停用词），又漏掉词干变化的
+`-y→-ies`（`antibody` 不是 `antibodies` 的前缀）。实测覆盖从 6/228 提到 145/228，
+停用词污染从 127 个降到 1 个（`docs/RESULTS.md` §17.3）。
+
+两个候选规则都保留为**显式参数**（`rule = lcp | prefix`），因为已发布的 `concept-v0`
+用的是 `prefix`，要能被逐字节复现；规则记在工件的 `params.candidate_rule` 里，
+缺了就停车，不猜默认值。
+
+### 10.2 训练与评测隔离
+
+- 权重只在 **outer-train**（663 条，train split 内按 `FNV-1a(qid, seed=20261110) % 5 != 0`）上学，
+  目标就是 harness 指标 nDCG@10，用坐标搜索（不用代理损失，避免代理与指标不一致）；
+- **heldout**（146 条）只用于判决，不参与任何一步拟合；
+- **默认不读 test qrels**：`sl concept-eval` 的默认划分是 train split 内的 heldout，
+  工件构建器只读 `corpus.jsonl`；
+- **`--split test` 需要预注册**：它读完整数据集（含 test qrels），只在写定了判据的
+  迁移检验里用一次（已用过一次：`docs/PREREG-concept-transfer.md` → scifact 权重 → arguana）。
+
+### 10.3 工件（`data/<dataset>/artifacts/concept-<ver>/`）
+
+```text
+manifest.json    id / kind=concept_map / weights_origin=learned_weights /
+                 prior_factor{name,kind=concept,shape,dtype,count} /
+                 network{arch,params,checkpoint_sha256,features,weights,intercept} /
+                 counts / files(sha256) / runtime / trained_on / contamination
+concepts.json    {"entries": {token: [[规范形式, 1.0]]}}     ← 先验因子本体
+weights.json     学到的 w / b、特征缩放、候选规则、目标与划分
+                 （network.checkpoint_sha256 指向它；缺 candidate_rule.rule 时构建器停车）
+```
+
+同一数据集可以有多个版本共存（`concept-v0` / `concept-v1`，差别见 §10.5），
+评测用 `sl concept-eval --artifact <id>` 指定。
+
+`concepts.json` 与 `exp-ppmi-v0` / `field-v0` **同构**（`token → [[目标, 置信度]]`），
+所以外壳只多一条查表路径，不多一套解析；置信度恒为 1.0（硬归并）——
+软归并（`tf_eff = tf_exact + λ·tf_variant`）已试过 λ∈{0.25,0.5,0.75}，
+两套划分上都不优于 λ=1（`docs/RESULTS.md` §18 #3），因此外壳不提供该开关。
+
+### 10.4 外壳怎么消费
+
+`concept-bm25`（`crates/sl-adapters/src/field_bm25.rs`）在**索引期与查询期都**把 token 映射到
+规范形式，再进同一份 `PositionalIndex`；idf 定义、`k1`/`b`、同分排序与 `bm25` 完全相同。
+映射为空时必须与 `bm25` 逐查询一致，由 `concept_mode_with_empty_map_matches_bm25` 守着。
+
+### 10.5 工件版本
+
+| 工件 | 候选规则 | 归并 token | heldout Δ nDCG@10 | 说明 |
+|---|---|---:|---|---|
+| `concept-v0` | `prefix`（严格前缀） | 3617 | +0.01872（未过带） | 首个版本，保留用于复现与对照 |
+| `concept-v1` | `lcp`（共享前缀 ≥70%） | 8506 | +0.02487（过带） | 当前版本，`concepts.json` sha256 `6a5fde5538f9c10e…` |
+
+`concept-v1` 的增益通过了**等价对照**（`docs/RESULTS.md` §20）：保留被归并 token 集合、
+组大小分布与规范形式规则，只随机打乱分组，20 次随机归并的 heldout Δ 均值 **−0.01501**
+（区间 [−0.02812, −0.00502]），真实值 `+0.02487` 超出该零分布。⇒ 增益来自「按形态归并」
+这件事本身，不是「任意分组」的产物。
+
+两个工件之间**唯一的差别**是候选规则（权重都在这条空间上重训过）。v1 相对 v0 的直接配对差
+是 +0.00615（2SE 0.028），**仍落在噪声带内**——所以不能声称「v1 的规则被证明更好」。
+
+### 10.6 这个内核做不到什么
+
+- **它只改词项身份，不改词项权重**：给 per-token 乘系数这条路已被证伪三次
+  （`docs/RESULTS.md` §14 的 field per-token 因子、§15.2 的 `field_idf` / `idf_lift` / `saliency`）；
+- **候选空间依赖「共享前缀」这个结构**，只覆盖**后缀屈折**形态（英文/德文）。中文没有这种
+  形态关系，该候选空间在中文语料上没有意义，未测；
+- **它不是局部操作**：归并会改变文档侧词项的 df/idf，影响会泄漏到与形态无关的查询
+  （`docs/RESULTS.md` §17.4 有实例）；
+- **同义/上下位不在它范围内**：`cancer` 与 `carcinoma` 不是前缀关系，需要 `concept` 的另一种
+  实现（本体映射或 embedding 聚类），属于后续里程碑。

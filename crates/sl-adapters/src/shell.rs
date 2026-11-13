@@ -27,7 +27,10 @@ enum TokenizerChoice {
 
 impl TokenizerChoice {
     fn from_env() -> anyhow::Result<Self> {
-        match std::env::var("SL_SHELL_TOKENIZER").unwrap_or_else(|_| "word".to_string()).as_str() {
+        match std::env::var("SL_SHELL_TOKENIZER")
+            .unwrap_or_else(|_| "word".to_string())
+            .as_str()
+        {
             "word" => Ok(Self::Word),
             "qwen" | "qwen2.5-0.5b" | "bpe" => Ok(Self::Qwen),
             other => anyhow::bail!("SL_SHELL_TOKENIZER 只接受 word / qwen，收到 {other:?}"),
@@ -55,7 +58,9 @@ impl Tokenizer {
     }
 
     fn qwen() -> anyhow::Result<Self> {
-        Ok(Self::Qwen(Box::new(LlmTokenizer::from_env_or_default(None)?)))
+        Ok(Self::Qwen(Box::new(LlmTokenizer::from_env_or_default(
+            None,
+        )?)))
     }
 
     fn encode(&mut self, text: &str) -> Vec<u32> {
@@ -70,7 +75,6 @@ impl Tokenizer {
             Self::Qwen(tok) => tok.encode_ids(text),
         }
     }
-
 }
 
 /// **先验因子**：`token → [(关联 token, 置信度)]` 的扩展表（`kind = query_expansion`）。
@@ -91,11 +95,14 @@ impl ExpansionTable {
     fn load(dir: &std::path::Path, alpha: f64, top_k: Option<usize>) -> anyhow::Result<Self> {
         let manifest_path = dir.join("manifest.json");
         let payload_path = dir.join("expansion.json");
-        let manifest: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&manifest_path)
-                .with_context(|| format!("读取扩展工件 {} 失败（先跑 tools/kernel/build_expansion.py）", manifest_path.display()))?,
-        )
-        .with_context(|| format!("解析 {} 失败", manifest_path.display()))?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).with_context(|| {
+                format!(
+                    "读取扩展工件 {} 失败（先跑 tools/kernel/build_expansion.py）",
+                    manifest_path.display()
+                )
+            })?)
+            .with_context(|| format!("解析 {} 失败", manifest_path.display()))?;
         let payload = std::fs::read(&payload_path)
             .with_context(|| format!("读取 {} 失败", payload_path.display()))?;
 
@@ -169,6 +176,78 @@ impl ExpansionTable {
     }
 }
 
+/// **先验因子**：`token → S(t)` 的显著性因子表。
+#[derive(Debug, Default)]
+struct SaliencyTable {
+    entries: std::collections::HashMap<String, f64>,
+    source: String,
+    sha256: String,
+}
+
+impl SaliencyTable {
+    fn load(dir: &std::path::Path) -> anyhow::Result<Self> {
+        let manifest_path = dir.join("manifest.json");
+        let payload_path = dir.join("saliency.json");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).with_context(|| {
+                format!(
+                    "读取 Saliency 工件 {} 失败（先跑 tools/kernel/build_saliency.py）",
+                    manifest_path.display()
+                )
+            })?)
+            .with_context(|| format!("解析 {} 失败", manifest_path.display()))?;
+        let payload = std::fs::read(&payload_path)
+            .with_context(|| format!("读取 {} 失败", payload_path.display()))?;
+
+        let expected = manifest
+            .get("files")
+            .and_then(|files| files.get("saliency.json"))
+            .and_then(|file| file.get("sha256"))
+            .and_then(|sha| sha.as_str())
+            .unwrap_or("");
+        if !expected.is_empty() {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&payload);
+            let actual = format!("{:x}", hasher.finalize());
+            if actual != expected {
+                anyhow::bail!(
+                    "Saliency 工件 {} 的 sha256 与 manifest 不符（期望 {expected}，实际 {actual}）",
+                    payload_path.display()
+                );
+            }
+        }
+
+        let parsed: serde_json::Value = serde_json::from_slice(&payload)
+            .with_context(|| format!("解析 {} 失败", payload_path.display()))?;
+        let mut entries = std::collections::HashMap::new();
+        if let Some(map) = parsed.get("entries").and_then(|value| value.as_object()) {
+            for (term, rows) in map {
+                if let Some(rows) = rows.as_array() {
+                    for row in rows {
+                        let Some(pair) = row.as_array() else { continue };
+                        if let Some(score) = pair.get(1).and_then(|v| v.as_f64()) {
+                            entries.insert(term.clone(), score);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let source = manifest
+            .get("source")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        Ok(Self {
+            entries,
+            source,
+            sha256: sha256_bytes_of(&payload),
+        })
+    }
+}
+
 fn sha256_bytes_of(payload: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -193,6 +272,14 @@ pub struct ShellAdapter {
     oac: Option<OacScorer>,
     oac_params: OacParams,
     expansion: Option<ExpansionTable>,
+    /// `None` = 总是扩展；`Some(τ)` = 只有检索置信度低于 τ（榜首优势不足）时才扩展。
+    gate_margin: Option<f64>,
+    /// BM25+ 下界偏置（0.0 = 纯 BM25）。
+    delta: f64,
+    /// 先验显著性因子 S(t)。
+    saliency: Option<SaliencyTable>,
+    /// 动态饱和度调节强度 lambda。
+    lambda_k1: f64,
 }
 
 impl std::fmt::Debug for ShellAdapter {
@@ -218,10 +305,13 @@ impl ShellAdapter {
             "index": "sl-engine::PositionalIndex（一份索引，所有算法共用）",
         });
         if let Some(obj) = config.as_object_mut() {
-            obj.insert("algorithm".into(), serde_json::json!(match scorer_kind {
-                Scorer::Bow => "bow（词袋端点，BM25 数学）",
-                Scorer::Oac => "oac（有序对齐覆盖）",
-            }));
+            obj.insert(
+                "algorithm".into(),
+                serde_json::json!(match scorer_kind {
+                    Scorer::Bow => "bow（词袋端点，BM25 数学）",
+                    Scorer::Oac => "oac（有序对齐覆盖）",
+                }),
+            );
             if scorer_kind == Scorer::Oac {
                 if let Some(oac) = oac_params.to_json().as_object() {
                     for (key, value) in oac {
@@ -248,20 +338,63 @@ impl ShellAdapter {
                     ),
                     Err(_) => None,
                 };
-                Some(ExpansionTable::load(std::path::Path::new(&dir), alpha, top_k)?)
+                Some(ExpansionTable::load(
+                    std::path::Path::new(&dir),
+                    alpha,
+                    top_k,
+                )?)
             }
             Err(_) => None,
         };
+        // 第一阶段过滤器的**固定规则版**：只在检索置信度低时才启用扩展。
+        // 门限 = (top1 − top_{k}) / top1；越大说明榜首优势越明显、越不需要扩展。
+        let gate_margin: Option<f64> = match std::env::var("SL_EXP_GATE") {
+            Ok(raw) => {
+                let value: f64 = raw
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("SL_EXP_GATE 不是数字：{raw:?}"))?;
+                if !value.is_finite() || value < 0.0 {
+                    anyhow::bail!("SL_EXP_GATE 必须是非负有限数：{raw:?}");
+                }
+                Some(value)
+            }
+            Err(_) => None,
+        };
+
+        // BM25+ 下界偏置（可选，默认 0.0 即传统 BM25）。
+        let delta: f64 = match std::env::var("SL_BOW_DELTA") {
+            Ok(raw) => {
+                let value: f64 = raw
+                    .trim()
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("SL_BOW_DELTA 不是数字：{raw:?}"))?;
+                if !value.is_finite() || value < 0.0 {
+                    anyhow::bail!("SL_BOW_DELTA 必须是非负有限数：{raw:?}");
+                }
+                value
+            }
+            Err(_) => 0.0,
+        };
+
+        if delta > 0.0 {
+            if let Some(obj) = config.as_object_mut() {
+                obj.insert("delta".into(), serde_json::json!(delta));
+            }
+        }
+
         if let (Some(table), Some(obj)) = (expansion.as_ref(), config.as_object_mut()) {
-            obj.insert("prior_factor".into(), serde_json::json!({
-                "name": "query_expansion",
-                "kind": "token_confidence_list",
-                "source": table.source,
-                "sha256": table.sha256,
-                "alpha": table.alpha,
-                "top_k": table.top_k,
-                "entries": table.entries.len(),
-            }));
+            obj.insert(
+                "prior_factor".into(),
+                serde_json::json!({
+                    "name": "query_expansion",
+                    "kind": "token_confidence_list",
+                    "source": table.source,
+                    "sha256": table.sha256,
+                    "alpha": table.alpha,
+                    "top_k": table.top_k,
+                    "entries": table.entries.len(),
+                }),
+            );
         } else if let Some(obj) = config.as_object_mut() {
             obj.insert("prior_factor".into(), serde_json::json!(null));
         }
@@ -270,7 +403,7 @@ impl ShellAdapter {
             info: AdapterInfo::new(
                 name,
                 family,
-                "0.1.0",
+                "0.2.0",
                 "外壳：crates/sl-engine（PositionalIndex + 打分器）；适配器：crates/sl-adapters/src/shell.rs",
             )
             .with_config(config),
@@ -282,7 +415,54 @@ impl ShellAdapter {
             oac: None,
             oac_params,
             expansion,
+            gate_margin,
+            delta,
+            saliency: None,
+            lambda_k1: 0.0,
         })
+    }
+
+    /// `saliency-bm25`：带先验 Saliency 自适应调制的 BM25 外壳。
+    pub fn saliency_bm25() -> anyhow::Result<Self> {
+        let dataset = std::env::var("SL_DATASET").unwrap_or_else(|_| "scifact".to_string());
+        let default_dir = format!("data/{dataset}/artifacts/saliency-v0");
+        let dir = std::env::var("SL_SALIENCY_ARTIFACT").unwrap_or(default_dir);
+        let path = std::path::Path::new(&dir);
+        if !path.exists() {
+            anyhow::bail!(
+                "找不到 Saliency 工件目录 {}（先跑 tools/kernel/build_saliency.py {dataset}）",
+                dir
+            );
+        }
+        let delta = std::env::var("SL_BOW_DELTA")
+            .ok()
+            .and_then(|r| r.parse().ok())
+            .unwrap_or(0.5);
+        let lambda_k1 = std::env::var("SL_LAMBDA_K1")
+            .ok()
+            .and_then(|r| r.parse().ok())
+            .unwrap_or(0.5);
+
+        let table = SaliencyTable::load(path)?;
+        let mut adapter = Self::build(Scorer::Bow, "saliency-bm25", "shell-saliency-bm25")?;
+        adapter.delta = delta;
+        adapter.lambda_k1 = lambda_k1;
+        if let Some(config) = adapter.info.config.as_object_mut() {
+            config.insert("delta".into(), serde_json::json!(delta));
+            config.insert("lambda_k1".into(), serde_json::json!(lambda_k1));
+            config.insert(
+                "prior_factor_saliency".into(),
+                serde_json::json!({
+                    "name": "token_saliency",
+                    "kind": "token_confidence_list",
+                    "source": table.source,
+                    "sha256": table.sha256,
+                    "entries": table.entries.len(),
+                }),
+            );
+        }
+        adapter.saliency = Some(table);
+        Ok(adapter)
     }
 
     /// `bow`：词袋端点（G1 等价性门用）。
@@ -290,9 +470,69 @@ impl ShellAdapter {
         Self::build(Scorer::Bow, "bow", "shell-bow")
     }
 
+    /// `bow-plus`：带 BM25+ 词频下界偏置 delta 的词袋端点。
+    pub fn bow_plus(delta: f64) -> anyhow::Result<Self> {
+        let mut adapter = Self::build(Scorer::Bow, "bow-plus", "shell-bow-plus")?;
+        adapter.delta = delta;
+        if let Some(config) = adapter.info.config.as_object_mut() {
+            config.insert("delta".into(), serde_json::json!(delta));
+        }
+        Ok(adapter)
+    }
+
     /// `oac`：有序对齐覆盖。
     pub fn oac() -> anyhow::Result<Self> {
         Self::build(Scorer::Oac, "oac", "shell-oac")
+    }
+
+    /// `gated-exp`：自适应门控扩展（Token 筛选 + 门控扩展）。
+    pub fn gated_exp() -> anyhow::Result<Self> {
+        let dir = std::env::var("SL_GATED_EXP_ARTIFACT")
+            .or_else(|_| std::env::var("SL_EXPANSION_ARTIFACT"))
+            .unwrap_or_else(|_| "data/scifact/artifacts/gated-exp-v1".to_string());
+        let path = std::path::Path::new(&dir);
+        if !path.exists() {
+            anyhow::bail!(
+                "找不到 gated-exp 工件目录 {}（先跑 tools/kernel/build_gated_factors.py）",
+                dir
+            );
+        }
+        let alpha: f64 = std::env::var("SL_EXP_ALPHA")
+            .unwrap_or_else(|_| "0.25".to_string())
+            .parse()
+            .map_err(|_| anyhow::anyhow!("SL_EXP_ALPHA 不是数字"))?;
+        let gate: f64 = std::env::var("SL_EXP_GATE")
+            .unwrap_or_else(|_| "0.5".to_string())
+            .parse()
+            .map_err(|_| anyhow::anyhow!("SL_EXP_GATE 不是数字"))?;
+        let top_k: usize = std::env::var("SL_EXP_TOPK")
+            .unwrap_or_else(|_| "3".to_string())
+            .parse()
+            .map_err(|_| anyhow::anyhow!("SL_EXP_TOPK 不是正整数"))?;
+
+        let expansion = ExpansionTable::load(path, alpha, Some(top_k))?;
+        let mut adapter = Self::build(Scorer::Bow, "gated-exp", "shell-gated-exp")?;
+        adapter.expansion = Some(expansion);
+        adapter.gate_margin = Some(gate);
+
+        if let Some(config) = adapter.info.config.as_object_mut() {
+            if let Some(table) = adapter.expansion.as_ref() {
+                config.insert(
+                    "prior_factor".into(),
+                    serde_json::json!({
+                        "name": "gated_expansion",
+                        "kind": "token_confidence_list",
+                        "source": table.source,
+                        "sha256": table.sha256,
+                        "alpha": table.alpha,
+                        "top_k": table.top_k,
+                        "gate_margin": gate,
+                        "entries": table.entries.len(),
+                    }),
+                );
+            }
+        }
+        Ok(adapter)
     }
 }
 
@@ -358,7 +598,58 @@ fn oac_params_from_env() -> anyhow::Result<OacParams> {
     Ok(params)
 }
 
+/// 检索是否"有把握"：看**头部**的分数衰减 `1 − top_k / top1`（k 取 min(10, 命中数)）。
+///
+/// 衰减大 ⇒ 榜首优势明显 ⇒ 有把握 ⇒ 不扩展；衰减小 ⇒ 一片混战 ⇒ 扩展可能有帮助。
+/// 注意不能用「最后一名」当分母：长尾分数接近 0，比值恒为 1，门等于永远开着。
+fn confident(hits: &[(String, f64)], tau: f64) -> bool {
+    let Some((_, top1)) = hits.first() else {
+        return false;
+    };
+    if *top1 <= 0.0 {
+        return false;
+    }
+    if hits.len() < 2 {
+        return true;
+    }
+    let head = hits.len().min(10) - 1;
+    let kth = hits[head].1;
+    (top1 - kth) / top1 >= tau
+}
+
 impl ShellAdapter {
+    /// 只用原词打一次分（第一阶段）。
+    fn encode_base(&mut self, query: &str) -> Vec<WeightedTerm> {
+        match &mut self.tokenizer {
+            Tokenizer::Word(dict) => bm25_terms(query)
+                .into_iter()
+                .map(|term| {
+                    let next = dict.len() as u32;
+                    let id = *dict.entry(term).or_insert(next);
+                    (id, 1.0)
+                })
+                .collect(),
+            Tokenizer::Qwen(tok) => tok
+                .encode_ids(query)
+                .into_iter()
+                .map(|id| (id, 1.0))
+                .collect(),
+        }
+    }
+
+    fn score(&mut self, weighted: &[WeightedTerm], k: usize) -> anyhow::Result<Vec<(String, f64)>> {
+        match self.scorer_kind {
+            Scorer::Bow => {
+                let scorer = self.bow.as_ref().context("bow 未建索引（先调 index）")?;
+                Ok(scorer.search(weighted, k))
+            }
+            Scorer::Oac => {
+                let scorer = self.oac.as_mut().context("oac 未建索引（先调 index）")?;
+                Ok(scorer.search(weighted, k))
+            }
+        }
+    }
+
     /// 查询 → 带权词项：原词权重 1.0，扩展词权重 `alpha × conf`。
     ///
     /// 扩展表按 **token 字符串** 建（与 tokenizer 无关），所以这里必须拿到字符串；
@@ -387,7 +678,10 @@ impl ShellAdapter {
             }
             Tokenizer::Qwen(tok) => {
                 // BPE 路径暂不支持扩展（字符串空间不同），保持纯原词行为。
-                tok.encode_ids(query).into_iter().map(|id| (id, 1.0)).collect()
+                tok.encode_ids(query)
+                    .into_iter()
+                    .map(|id| (id, 1.0))
+                    .collect()
             }
         }
     }
@@ -405,23 +699,45 @@ impl Adapter for ShellAdapter {
             encoded.push((doc.id.clone(), self.tokenizer.encode(&doc.full_text())));
         }
         let index = Arc::new(PositionalIndex::build(encoded));
-        self.bow = Some(BowScorer::new(Arc::clone(&index)));
+        let bow = match &self.saliency {
+            Some(table) => {
+                let mut map = std::collections::HashMap::new();
+                if let Tokenizer::Word(dict) = &self.tokenizer {
+                    for (term, &score) in &table.entries {
+                        if let Some(&id) = dict.get(term) {
+                            map.insert(id, score);
+                        }
+                    }
+                }
+                BowScorer::with_saliency(Arc::clone(&index), self.delta, map, self.lambda_k1)?
+            }
+            None => BowScorer::with_delta(Arc::clone(&index), self.delta)?,
+        };
+        self.bow = Some(bow);
         self.oac = Some(OacScorer::new(Arc::clone(&index), self.oac_params.clone()));
         self.index = Some(index);
         Ok(())
     }
 
     fn search(&mut self, query: &str, k: usize) -> anyhow::Result<Vec<(String, f64)>> {
-        let weighted = self.encode_weighted(query);
-        match self.scorer_kind {
-            Scorer::Bow => {
-                let scorer = self.bow.as_ref().context("bow 未建索引（先调 index）")?;
-                Ok(scorer.search(&weighted, k))
-            }
-            Scorer::Oac => {
-                let scorer = self.oac.as_mut().context("oac 未建索引（先调 index）")?;
-                Ok(scorer.search(&weighted, k))
-            }
+        // 第一阶段：只用原词检索一次（这一步也是"检索置信度"的来源）。
+        let base = self.encode_base(query);
+        let base_hits = self.score(&base, k)?;
+
+        let expand = match (self.expansion.as_ref(), self.gate_margin) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(_), Some(tau)) => !confident(&base_hits, tau),
+        };
+        if !expand {
+            return Ok(base_hits);
         }
+
+        // 第二阶段：把扩展词加进查询再打一次分。
+        let weighted = self.encode_weighted(query);
+        if weighted.len() == base.len() {
+            return Ok(base_hits);
+        }
+        self.score(&weighted, k)
     }
 }

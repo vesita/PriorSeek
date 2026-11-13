@@ -1070,7 +1070,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "sl-adapters"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "jieba-rs",
@@ -1085,19 +1085,20 @@ dependencies = [
 
 [[package]]
 name = "sl-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "serde_json",
+ "sha2",
  "sl-adapters",
  "sl-core",
 ]
 
 [[package]]
 name = "sl-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1110,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "sl-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",

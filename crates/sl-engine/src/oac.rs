@@ -124,7 +124,10 @@ impl OacParams {
         let mut value = self.kernel.to_json();
         if let Some(obj) = value.as_object_mut() {
             obj.insert("ordered".into(), serde_json::json!(self.ordered));
-            obj.insert("use_span_discount".into(), serde_json::json!(self.use_span_discount));
+            obj.insert(
+                "use_span_discount".into(),
+                serde_json::json!(self.use_span_discount),
+            );
             obj.insert("window".into(), serde_json::json!(self.window));
             obj.insert("max_skip".into(), serde_json::json!(self.max_skip));
             obj.insert("length_b".into(), serde_json::json!(self.length_b));
@@ -147,7 +150,12 @@ pub struct OacScorer {
 
 impl OacScorer {
     pub fn new(index: Arc<PositionalIndex>, params: OacParams) -> Self {
-        let mut scorer = Self { index, params, recent: Vec::new(), prefix_best: Vec::new() };
+        let mut scorer = Self {
+            index,
+            params,
+            recent: Vec::new(),
+            prefix_best: Vec::new(),
+        };
         scorer.reset_buffers(0);
         scorer
     }
@@ -259,9 +267,7 @@ impl OacScorer {
             self.recent[qi].push((pos, best_here));
             // 只保留仍在窗口内的（更早的对后续事件不再可达）。
             let cutoff = pos.saturating_sub(window);
-            if let Some(first_keep) =
-                self.recent[qi].iter().position(|(p, _)| *p >= cutoff)
-            {
+            if let Some(first_keep) = self.recent[qi].iter().position(|(p, _)| *p >= cutoff) {
                 self.recent[qi].drain(..first_keep);
             }
             if best_here > self.prefix_best[qi] {
@@ -352,7 +358,11 @@ mod tests {
     fn ordered_matching_prefers_in_order_documents() {
         // 只比较**等长文档**，把「长度归一」这个因素排除掉：
         // d1 = [1,2,3] 正序，d2 = [3,2,1] 反序，两者长度都是 3。
-        let mut s = scorer(OacParams { window: 8, max_skip: 2, ..Default::default() });
+        let mut s = scorer(OacParams {
+            window: 8,
+            max_skip: 2,
+            ..Default::default()
+        });
         let q = unit(&[1, 2, 3]);
         let d1 = s.score_doc(&q, 0);
         let d2 = s.score_doc(&q, 1);
@@ -364,13 +374,24 @@ mod tests {
     fn length_normalization_penalizes_sparse_matches_in_long_documents() {
         // d3 = [1,9,9,2]（len 4，命中 2 个查询词）vs d2 = [3,2,1]（len 3，命中 3 个但反序）。
         // 长度归一开启时，长文档的稀疏匹配会被压低——这是模型定义的一部分，不是 bug。
-        let mut with_norm = scorer(OacParams { window: 8, length_b: 0.75, ..Default::default() });
-        let mut without = scorer(OacParams { window: 8, length_b: 0.0, ..Default::default() });
+        let mut with_norm = scorer(OacParams {
+            window: 8,
+            length_b: 0.75,
+            ..Default::default()
+        });
+        let mut without = scorer(OacParams {
+            window: 8,
+            length_b: 0.0,
+            ..Default::default()
+        });
         let q = unit(&[1, 2, 3]);
         let (a, b) = (with_norm.score_doc(&q, 2), with_norm.score_doc(&q, 1));
         let (a0, b0) = (without.score_doc(&q, 2), without.score_doc(&q, 1));
         assert!(a < b, "有归一时长文档稀疏匹配被压低：{a} vs {b}");
-        assert!(a0 > b0 || (a0 - b0).abs() > 0.0, "无归一时该关系应不同：{a0} vs {b0}");
+        assert!(
+            a0 > b0 || (a0 - b0).abs() > 0.0,
+            "无归一时该关系应不同：{a0} vs {b0}"
+        );
     }
 
     #[test]
@@ -384,12 +405,17 @@ mod tests {
         let q = unit(&[1, 2, 3]);
         let d1 = s.score_doc(&q, 0);
         let d2 = s.score_doc(&q, 1);
-        assert!((d1 - d2).abs() < 1e-12, "无序模式下反序文档应与正序同分：{d1} vs {d2}");
+        assert!(
+            (d1 - d2).abs() < 1e-12,
+            "无序模式下反序文档应与正序同分：{d1} vs {d2}"
+        );
     }
 
     #[test]
     fn uniform_kernel_removes_span_discount() {
-        let decay = KernelGapTable { weights: [1.0, 0.5, 0.25, 0.1, 0.05] };
+        let decay = KernelGapTable {
+            weights: [1.0, 0.5, 0.25, 0.1, 0.05],
+        };
         let mut with_discount = scorer(OacParams {
             kernel: decay,
             window: 8,
@@ -408,8 +434,16 @@ mod tests {
 
     #[test]
     fn window_limits_transitions() {
-        let mut tight = scorer(OacParams { window: 1, max_skip: 0, ..Default::default() });
-        let mut loose = scorer(OacParams { window: 8, max_skip: 0, ..Default::default() });
+        let mut tight = scorer(OacParams {
+            window: 1,
+            max_skip: 0,
+            ..Default::default()
+        });
+        let mut loose = scorer(OacParams {
+            window: 8,
+            max_skip: 0,
+            ..Default::default()
+        });
         let q = unit(&[1, 2]);
         let tight_score = tight.score_doc(&q, 2); // d3: 1 与 2 间隔 3，超出 window=1
         let loose_score = loose.score_doc(&q, 2);

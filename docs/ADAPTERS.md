@@ -9,6 +9,7 @@
 
 ```text
 bm25  faq-char  faq-bigram  faq-word  faq-hybrid  faq-bm25  rs
+seq  field-bm25  concept-bm25  bm25-llm  bow  oac
 ```
 
 | 名字 | 族 | 实现位置 | 来源 |
@@ -20,6 +21,8 @@ bm25  faq-char  faq-bigram  faq-word  faq-hybrid  faq-bm25  rs
 | `faq-hybrid` | `faq-scheme` | 同上 | 词 2x + 双字 1x + 单字 0.3x |
 | `faq-bm25` | `faq-scheme` | 同上 | 双字 BM25（IDF + 长度归一；倒排检索） |
 | `bm25-llm` | `bm25` | `crates/sl-adapters/src/{bm25_llm,tokenizer_llm}.rs` | 同 `bm25` 公式，切分换成 **LLM BPE tokenizer**（Qwen2.5，151k 词表，非自研）；用于「只换 tokenizer」的单变量对照 |
+| `field-bm25` | `factor-shell` | `crates/sl-adapters/src/field_bm25.rs` | 因子消费外壳的两条轴之一：**字段加权**（`kind = field`，工件 `tools/kernel/build_field.py`）；`SL_FIELD_BETA` 控制强度 |
+| `concept-bm25` | `factor-shell` | 同上 | 因子消费外壳的另一条轴：**概念归并**（`kind = concept`，工件 `tools/kernel/{train,build}_concept.py`）；两轴可组合，`SL_FIELD_BETA > 0` 时同时开字段加权 |
 | `rs` | `relation-search` | `crates/sl-adapters/src/rs.rs` | `https://github.com/vesita/relation-search`（本机检出 `~/coding/my/relation-search`；Rust BM25 + 代码感知分词 + 内嵌 ast-grep），**子进程**接入 |
 
 ## 移植保真度（faq-*）

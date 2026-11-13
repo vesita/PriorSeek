@@ -12,6 +12,7 @@
 //! | `rs` | relation-search（Rust BM25 + ast-grep），子进程接入 | [`rs`] |
 //! | `seq` | token 时序相关度内核（BM25 主体 + 内核工件的时序边权） | [`seq`] |
 //! | `bm25-llm` | 同 BM25 公式，切分换成 **LLM BPE tokenizer**（不自研子词） | [`bm25_llm`] |
+//! | `field-bm25` / `concept-bm25` | 因子消费外壳：字段加权 / 概念归并，两条轴可组合 | [`field_bm25`] |
 //!
 //! 共享的清洗/切分点在 [`tokenize`]；中文语料相关的适用范围写在 [`faq`] 的模块文档里。
 
@@ -20,18 +21,32 @@ use anyhow::{bail, Result};
 mod bm25;
 mod bm25_llm;
 mod faq;
+mod field_bm25;
+mod flow_match;
+mod gated_fusion;
+mod hybrid_rrf;
+mod logic_exec;
+mod neural_topo;
 mod rs;
 mod seq;
 mod shell;
+mod sparse_route;
 pub mod tokenize;
 pub mod tokenizer_llm;
 
 pub use bm25::Bm25Adapter;
-pub use faq::{FaqAdapter, Scheme};
-pub use rs::RelationSearchAdapter;
 pub use bm25_llm::Bm25LlmAdapter;
+pub use faq::{FaqAdapter, Scheme};
+pub use field_bm25::{FieldBm25Adapter, FieldWeight};
+pub use flow_match::FlowMatchAdapter;
+pub use gated_fusion::GatedFusionAdapter;
+pub use hybrid_rrf::{DenseAdapter, HybridRrfAdapter};
+pub use logic_exec::LogicExecutionAdapter;
+pub use neural_topo::NeuralTopoAdapter;
+pub use rs::RelationSearchAdapter;
 pub use seq::SeqAdapter;
 pub use shell::ShellAdapter;
+pub use sparse_route::SparseRouteAdapter;
 
 /// 当前可用的适配器名（进 `sl run --adapters` 的取值），顺序即展示顺序。
 pub fn names() -> Vec<&'static str> {
@@ -44,9 +59,23 @@ pub fn names() -> Vec<&'static str> {
         "faq-bm25",
         "rs",
         "seq",
+        "field-bm25",
+        "concept-bm25",
+        "concept-synonym",
+        "tiered-concept",
+        "dense",
+        "hybrid-rrf",
+        "gated-fusion",
         "bm25-llm",
         "bow",
+        "bow-plus",
+        "saliency-bm25",
         "oac",
+        "gated-exp",
+        "sparse-route",
+        "neural-topo",
+        "flow-match",
+        "logic-exec",
     ]
 }
 
@@ -59,9 +88,32 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "bm25" => Box::new(Bm25Adapter::new()),
         "rs" => Box::new(RelationSearchAdapter::new()?),
         "seq" => Box::new(SeqAdapter::new()?),
+        "field-bm25" => Box::new(FieldBm25Adapter::from_env()?),
+        "concept-bm25" => Box::new(FieldBm25Adapter::from_env_concept()?),
+        "concept-synonym" => Box::new(FieldBm25Adapter::from_named_concept(
+            "concept-synonym-v1",
+            "concept-synonym",
+        )?),
+        "tiered-concept" => Box::new(FieldBm25Adapter::tiered_concept()?),
+        "dense" => Box::new(DenseAdapter::new()?),
+        "hybrid-rrf" => Box::new(HybridRrfAdapter::new()?),
+        "gated-fusion" => Box::new(GatedFusionAdapter::new()?),
         "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
         "bow" => Box::new(ShellAdapter::bow()?),
+        "bow-plus" => {
+            let delta = std::env::var("SL_BOW_DELTA")
+                .ok()
+                .and_then(|raw| raw.parse::<f64>().ok())
+                .unwrap_or(0.5);
+            Box::new(ShellAdapter::bow_plus(delta)?)
+        }
+        "saliency-bm25" => Box::new(ShellAdapter::saliency_bm25()?),
         "oac" => Box::new(ShellAdapter::oac()?),
+        "gated-exp" => Box::new(ShellAdapter::gated_exp()?),
+        "sparse-route" => Box::new(SparseRouteAdapter::new()?),
+        "neural-topo" => Box::new(NeuralTopoAdapter::new()?),
+        "flow-match" => Box::new(FlowMatchAdapter::new()?),
+        "logic-exec" => Box::new(LogicExecutionAdapter::new()?),
         other => match Scheme::from_name(other) {
             Some(scheme) => Box::new(FaqAdapter::new(scheme)),
             None => bail!("未知适配器 {other:?}；当前可用：{}", names().join(", ")),
@@ -87,9 +139,23 @@ mod tests {
                 "faq-bm25",
                 "rs",
                 "seq",
+                "field-bm25",
+                "concept-bm25",
+                "concept-synonym",
+                "tiered-concept",
+                "dense",
+                "hybrid-rrf",
+                "gated-fusion",
                 "bm25-llm",
                 "bow",
-                "oac"
+                "bow-plus",
+                "saliency-bm25",
+                "oac",
+                "gated-exp",
+                "sparse-route",
+                "neural-topo",
+                "flow-match",
+                "logic-exec"
             ]
         );
         let unique: std::collections::BTreeSet<&str> = names().into_iter().collect();

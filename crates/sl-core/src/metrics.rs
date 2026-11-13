@@ -62,7 +62,11 @@ pub fn evaluate_rankings(
     qrels: &Qrels,
     k: usize,
 ) -> (Metrics, Vec<PerQuery>) {
-    let recall_ks: Vec<usize> = DEFAULT_RECALL_KS.iter().copied().filter(|rk| *rk <= k).collect();
+    let recall_ks: Vec<usize> = DEFAULT_RECALL_KS
+        .iter()
+        .copied()
+        .filter(|rk| *rk <= k)
+        .collect();
     let mrr_at = DEFAULT_MRR_AT.min(k.max(1));
     let ndcg_at = DEFAULT_NDCG_AT.min(k.max(1));
     let map_at = DEFAULT_MAP_AT.min(k.max(1));
@@ -77,8 +81,11 @@ pub fn evaluate_rankings(
     let mut ap_sum = 0.0;
 
     for (qid, rel_map) in qrels {
-        let relevant: BTreeMap<&str, u32> =
-            rel_map.iter().filter(|(_, rel)| **rel > 0).map(|(d, r)| (d.as_str(), *r)).collect();
+        let relevant: BTreeMap<&str, u32> = rel_map
+            .iter()
+            .filter(|(_, rel)| **rel > 0)
+            .map(|(d, r)| (d.as_str(), *r))
+            .collect();
         if relevant.is_empty() {
             // qrels 判定这条查询没有正相关文档：它无法参与效果指标，只计数、不拉平均。
             skipped += 1;
@@ -103,7 +110,11 @@ pub fn evaluate_rankings(
         }
 
         for rk in &recall_ks {
-            let seen = top.iter().take(*rk).filter(|d| relevant.contains_key(d.as_str())).count();
+            let seen = top
+                .iter()
+                .take(*rk)
+                .filter(|d| relevant.contains_key(d.as_str()))
+                .count();
             let value = seen as f64 / relevant.len() as f64;
             *recall_sums.get_mut(rk).expect("recall k 已初始化") += value;
             // 命中率只看「有没有至少一条」，与 recall 的分母无关。
@@ -125,7 +136,11 @@ pub fn evaluate_rankings(
         let query_recall: BTreeMap<usize, f64> = recall_ks
             .iter()
             .map(|rk| {
-                let seen = top.iter().take(*rk).filter(|d| relevant.contains_key(d.as_str())).count();
+                let seen = top
+                    .iter()
+                    .take(*rk)
+                    .filter(|d| relevant.contains_key(d.as_str()))
+                    .count();
                 (*rk, seen as f64 / relevant.len() as f64)
             })
             .collect();
@@ -146,19 +161,45 @@ pub fn evaluate_rankings(
         recall: BTreeMap::new(),
         hit: BTreeMap::new(),
         mrr_at,
-        mrr: if scored == 0 { 0.0 } else { mrr_sum / scored as f64 },
+        mrr: if scored == 0 {
+            0.0
+        } else {
+            mrr_sum / scored as f64
+        },
         ndcg_at,
-        ndcg: if scored == 0 { 0.0 } else { ndcg_sum / scored as f64 },
+        ndcg: if scored == 0 {
+            0.0
+        } else {
+            ndcg_sum / scored as f64
+        },
         map_at,
-        map: if scored == 0 { 0.0 } else { ap_sum / scored as f64 },
+        map: if scored == 0 {
+            0.0
+        } else {
+            ap_sum / scored as f64
+        },
         queries_scored: scored,
         queries_skipped: skipped,
     };
     for (rk, sum) in recall_sums {
-        metrics.recall.insert(rk, if scored == 0 { 0.0 } else { sum / scored as f64 });
+        metrics.recall.insert(
+            rk,
+            if scored == 0 {
+                0.0
+            } else {
+                sum / scored as f64
+            },
+        );
     }
     for (rk, sum) in hit_sums {
-        metrics.hit.insert(rk, if scored == 0 { 0.0 } else { sum / scored as f64 });
+        metrics.hit.insert(
+            rk,
+            if scored == 0 {
+                0.0
+            } else {
+                sum / scored as f64
+            },
+        );
     }
     per_query.sort_by(|a, b| a.qid.cmp(&b.qid));
     (metrics, per_query)
@@ -227,14 +268,21 @@ mod tests {
     fn qrels(rows: &[(&str, &str, u32)]) -> Qrels {
         let mut map: Qrels = BTreeMap::new();
         for (qid, doc, rel) in rows {
-            map.entry((*qid).to_string()).or_default().insert((*doc).to_string(), *rel);
+            map.entry((*qid).to_string())
+                .or_default()
+                .insert((*doc).to_string(), *rel);
         }
         map
     }
 
     fn rankings(rows: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
         rows.iter()
-            .map(|(qid, docs)| ((*qid).to_string(), docs.iter().map(|d| (*d).to_string()).collect()))
+            .map(|(qid, docs)| {
+                (
+                    (*qid).to_string(),
+                    docs.iter().map(|d| (*d).to_string()).collect(),
+                )
+            })
             .collect()
     }
 
@@ -274,7 +322,12 @@ mod tests {
         let (m, _) = evaluate_rankings(&r, &qrels(&[("q1", "a", 2), ("q1", "b", 1)]), 10);
         let dcg = 1.0 / 2f64.log2() + 3.0 / 3f64.log2();
         let idcg = 3.0 / 2f64.log2() + 1.0 / 3f64.log2();
-        assert!(close(m.ndcg, dcg / idcg), "ndcg={} expected={}", m.ndcg, dcg / idcg);
+        assert!(
+            close(m.ndcg, dcg / idcg),
+            "ndcg={} expected={}",
+            m.ndcg,
+            dcg / idcg
+        );
         assert!(close(m.recall[&1], 0.5));
         assert!(close(m.recall[&3], 1.0));
         assert!(close(m.map, 1.0)); // 两个都在前两位，AP=1

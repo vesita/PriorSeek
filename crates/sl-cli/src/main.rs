@@ -5,6 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+
 use sl_core::{canonical, report, run};
 use std::fs;
 use std::io::Write;
@@ -79,6 +80,38 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// 字段启发评测：train pool 内切 heldout，比较 bm25 与 field-bm25 各臂
+    FieldEval {
+        #[arg(long, default_value = "scifact")]
+        dataset: String,
+        /// 召回深度
+        #[arg(long, default_value_t = 100)]
+        k: usize,
+        /// 逐查询指标与配对区间的 JSON 输出
+        #[arg(long, default_value = "results/field-eval.json")]
+        output: PathBuf,
+    },
+    /// 概念启发评测：内核学到的 `token → 概念` 因子，与字段加权正交组合
+    ConceptEval {
+        #[arg(long, default_value = "scifact")]
+        dataset: String,
+        /// 召回深度
+        #[arg(long, default_value_t = 100)]
+        k: usize,
+        /// 逐查询指标与配对区间的 JSON 输出
+        #[arg(long, default_value = "results/concept-eval.json")]
+        output: PathBuf,
+        /// 在哪个划分上评测：heldout（默认，判决用）或 outer（n 更大，Δ_min 更小）
+        /// heldout（默认，判决）/ outer（方向复核）/ test（预注册后才能用一次）
+        #[arg(long, value_parser = ["heldout", "outer", "test"], default_value = "heldout")]
+        split: String,
+        /// 把逐查询 nDCG 落盘（任意两臂之间的配对对比要用它）
+        #[arg(long)]
+        dump_per_query: bool,
+        /// 概念因子工件 id（默认 concept-v0；对比不同候选空间时用 concept-v1）
+        #[arg(long, default_value = "concept-v0")]
+        artifact: String,
+    },
     /// 内核工件：复核某次运行记录的工件哈希（换机器 / 长期归档后确认工件没被换掉）
     Artifact {
         #[command(subcommand)]
@@ -131,13 +164,55 @@ fn real_main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Run { dataset, adapters, k, warmup, label, allow_dirty } => {
-            run_one(&cli.data_dir, &cli.results_dir, &dataset, &adapters, k, warmup, label, allow_dirty)
-        }
+        Command::Run {
+            dataset,
+            adapters,
+            k,
+            warmup,
+            label,
+            allow_dirty,
+        } => run_one(
+            &cli.data_dir,
+            &cli.results_dir,
+            &dataset,
+            &adapters,
+            k,
+            warmup,
+            label,
+            allow_dirty,
+        ),
         Command::Report { run_dir } => rerender(&run_dir),
-        Command::Probe { dataset, adapter, query, k, json } => {
-            probe(&cli.data_dir, &dataset, &adapter, &query, k, json)
-        }
+        Command::Probe {
+            dataset,
+            adapter,
+            query,
+            k,
+            json,
+        } => probe(&cli.data_dir, &dataset, &adapter, &query, k, json),
+        Command::FieldEval { dataset, k, output } => run_field_eval(
+            &cli.data_dir,
+            &dataset,
+            k,
+            &output,
+            EvalSplit::Heldout,
+            false,
+        ),
+        Command::ConceptEval {
+            dataset,
+            k,
+            output,
+            split,
+            dump_per_query,
+            artifact,
+        } => run_concept_eval(
+            &cli.data_dir,
+            &dataset,
+            k,
+            &output,
+            EvalSplit::from_arg(&split),
+            dump_per_query,
+            &artifact,
+        ),
         Command::Artifact { command } => match command {
             ArtifactCommand::Verify { run_dir } => verify_artifacts(&run_dir),
         },
@@ -179,6 +254,7 @@ fn probe(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_artifacts(run_dir: &Path) -> Result<()> {
     let path = run_dir.join("run.json");
     let text = fs::read_to_string(&path).with_context(|| format!("读 {} 失败", path.display()))?;
@@ -189,8 +265,12 @@ fn verify_artifacts(run_dir: &Path) -> Result<()> {
     for adapter in &record.adapters {
         for artifact in &adapter.info.artifacts {
             let dir = Path::new(&artifact.dir);
-            let current = sl_core::KernelArtifact::from_dir(dir)
-                .with_context(|| format!("复核适配器 {} 的工件 {} 失败", adapter.info.name, artifact.id))?;
+            let current = sl_core::KernelArtifact::from_dir(dir).with_context(|| {
+                format!(
+                    "复核适配器 {} 的工件 {} 失败",
+                    adapter.info.name, artifact.id
+                )
+            })?;
             if current.manifest_sha256 != artifact.manifest_sha256 {
                 bail!(
                     "适配器 {} 的工件 {} 与运行记录不一致：manifest 哈希 {} ≠ 记录里的 {}",
@@ -201,7 +281,11 @@ fn verify_artifacts(run_dir: &Path) -> Result<()> {
                 );
             }
             if current.files != artifact.files {
-                bail!("适配器 {} 的工件 {} 内容文件哈希与运行记录不一致", adapter.info.name, artifact.id);
+                bail!(
+                    "适配器 {} 的工件 {} 内容文件哈希与运行记录不一致",
+                    adapter.info.name,
+                    artifact.id
+                );
             }
             checked += 1;
             println!(
@@ -224,7 +308,10 @@ fn verify_artifacts(run_dir: &Path) -> Result<()> {
 
 fn list_datasets(data_dir: &Path) -> Result<()> {
     if !data_dir.exists() {
-        println!("{} 不存在：还没有构建任何数据集（见 docs/DATASETS.md）", data_dir.display());
+        println!(
+            "{} 不存在：还没有构建任何数据集（见 docs/DATASETS.md）",
+            data_dir.display()
+        );
         return Ok(());
     }
     let mut found = 0usize;
@@ -241,7 +328,10 @@ fn list_datasets(data_dir: &Path) -> Result<()> {
         let loaded = match canonical::load_dataset(&dir) {
             Ok(loaded) => loaded,
             Err(err) => {
-                eprintln!("[sl] 跳过 {}：不是 search-lab 规范数据集（{err:#}）", dir.display());
+                eprintln!(
+                    "[sl] 跳过 {}：不是 search-lab 规范数据集（{err:#}）",
+                    dir.display()
+                );
                 continue;
             }
         };
@@ -266,9 +356,7 @@ fn list_datasets(data_dir: &Path) -> Result<()> {
 fn verify_dataset(data_dir: &Path, name: &str) -> Result<()> {
     let dir = data_dir.join(name);
     let loaded = canonical::load_dataset(&dir).with_context(|| {
-        format!(
-            "加载数据集 {name} 失败；先构建：`uv run tools/datasets/build.py {name}`"
-        )
+        format!("加载数据集 {name} 失败；先构建：`uv run tools/datasets/build.py {name}`")
     })?;
     loaded.verify_strict()?;
     let m = &loaded.dataset.manifest;
@@ -315,7 +403,9 @@ fn run_one(
     })?;
     if !allow_dirty {
         loaded.verify_strict().with_context(|| {
-            format!("数据集 {dataset_name} 未通过校验（调试可用 --allow-dirty 绕过，但结果不可入库）")
+            format!(
+                "数据集 {dataset_name} 未通过校验（调试可用 --allow-dirty 绕过，但结果不可入库）"
+            )
         })?;
     }
     if !loaded.pruned.is_clean() {
@@ -349,11 +439,7 @@ fn run_one(
     let started_at = chrono::Local::now();
     let outcomes = run::run_dataset(&dataset, &mut adapters, k, warmup)?;
 
-    let run_id = format!(
-        "{}-{}",
-        dataset.name,
-        started_at.format("%Y%m%d-%H%M%S")
-    );
+    let run_id = format!("{}-{}", dataset.name, started_at.format("%Y%m%d-%H%M%S"));
     let run_id = match &label {
         Some(label) => format!("{run_id}-{label}"),
         None => run_id,
@@ -374,8 +460,11 @@ fn run_one(
     fs::write(out_dir.join("run.json"), run_json + "\n")?;
 
     for outcome in &outcomes {
-        let path = out_dir.join("per_query").join(format!("{}.jsonl", outcome.info.name));
-        let file = fs::File::create(&path).with_context(|| format!("创建 {} 失败", path.display()))?;
+        let path = out_dir
+            .join("per_query")
+            .join(format!("{}.jsonl", outcome.info.name));
+        let file =
+            fs::File::create(&path).with_context(|| format!("创建 {} 失败", path.display()))?;
         let mut writer = std::io::BufWriter::new(file);
         for row in &outcome.per_query {
             serde_json::to_writer(&mut writer, row)?;
@@ -394,8 +483,8 @@ fn run_one(
 fn rerender(run_dir: &Path) -> Result<()> {
     let path = run_dir.join("run.json");
     let text = fs::read_to_string(&path).with_context(|| format!("读 {} 失败", path.display()))?;
-    let record: run::RunRecord = serde_json::from_str(&text)
-        .with_context(|| format!("解析 {} 失败", path.display()))?;
+    let record: run::RunRecord =
+        serde_json::from_str(&text).with_context(|| format!("解析 {} 失败", path.display()))?;
     let markdown = report::render_markdown(&record);
     fs::write(run_dir.join("report.md"), &markdown)?;
     println!("{markdown}");
@@ -409,4 +498,426 @@ fn format_names() -> String {
     } else {
         names.join(", ")
     }
+}
+
+/// train/heldout 划分：FNV-1a(qid, seed=20261110) % 5 == 0 进 heldout。
+fn is_heldout_qid(qid: &str) -> bool {
+    const SEED: u64 = 20261110;
+    let mut hash = SEED ^ 0xcbf29ce484222325;
+    for byte in qid.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash.is_multiple_of(5)
+}
+
+/// 只读语料，并校验它与数据集 manifest 的摘要一致。
+///
+/// 评测**不能**走 `load_dataset`：它会一并读 test qrels，而这条实验路径不碰 test。
+fn load_corpus_only(dir: &Path) -> Result<Vec<sl_core::Doc>> {
+    let corpus_path = dir.join("corpus.jsonl");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("manifest.json"))?)
+            .context("解析数据集 manifest 失败")?;
+    let expected = manifest["files"]["corpus.jsonl"]["sha256"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("manifest 缺 corpus.jsonl 摘要"))?;
+    let bytes = std::fs::read(&corpus_path)
+        .with_context(|| format!("读取 {} 失败", corpus_path.display()))?;
+    let actual = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    if actual != expected {
+        bail!(
+            "{} 的 sha256 与 manifest 不符（期望 {expected}，实际 {actual}）",
+            corpus_path.display()
+        );
+    }
+    let mut docs = Vec::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        docs.push(serde_json::from_slice(line).context("解析 corpus.jsonl 行失败")?);
+    }
+    Ok(docs)
+}
+
+/// 配对 bootstrap：返回 (delta, se, ci_low, ci_high)。
+fn paired_bootstrap<F>(
+    base: &[sl_core::PerQuery],
+    arm: &[sl_core::PerQuery],
+    metric: F,
+) -> (f64, f64, f64, f64)
+where
+    F: Fn(&sl_core::PerQuery) -> f64,
+{
+    let by_qid: std::collections::HashMap<&str, &sl_core::PerQuery> =
+        arm.iter().map(|row| (row.qid.as_str(), row)).collect();
+    let deltas: Vec<f64> = base
+        .iter()
+        .filter_map(|row| {
+            by_qid
+                .get(row.qid.as_str())
+                .map(|other| metric(other) - metric(row))
+        })
+        .collect();
+    if deltas.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let n = deltas.len() as f64;
+    let delta = deltas.iter().sum::<f64>() / n;
+    let se = if deltas.len() < 2 {
+        0.0
+    } else {
+        (deltas.iter().map(|x| (x - delta).powi(2)).sum::<f64>() / (n - 1.0)).sqrt() / n.sqrt()
+    };
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut samples = Vec::with_capacity(2000);
+    for _ in 0..2000 {
+        let mut sum = 0.0;
+        for _ in 0..deltas.len() {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            sum += deltas[(state >> 33) as usize % deltas.len()];
+        }
+        samples.push(sum / n);
+    }
+    samples.sort_by(f64::total_cmp);
+    (delta, se, samples[50], samples[1949])
+}
+
+/// 评测划分。
+///
+/// `Heldout` / `Outer` 都在 train split 内部（判决 / 方向复核）；
+/// `Test` 只用于**预注册过的一次性迁移检验**，会读 test qrels——见 `docs/PREREG-concept-transfer.md`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvalSplit {
+    Heldout,
+    Outer,
+    Test,
+}
+
+impl EvalSplit {
+    fn from_arg(value: &str) -> Self {
+        match value {
+            "outer" => Self::Outer,
+            "test" => Self::Test,
+            _ => Self::Heldout,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Heldout => "heldout",
+            Self::Outer => "outer_train",
+            Self::Test => "test",
+        }
+    }
+}
+
+/// 评测驱动：给定臂清单，跑配对评测并落盘。
+///
+/// `field-eval` 与 `concept-eval` 只差在「臂怎么构造」——split、配对 bootstrap、落盘格式
+/// 只在这里实现一份，否则两条路径的口径会各自漂移。
+/// 一次因子评测的全部输入。
+struct SweepRequest<'a> {
+    dir: &'a Path,
+    dataset_name: &'a str,
+    k: usize,
+    output: &'a Path,
+    factor_record: serde_json::Value,
+    split: EvalSplit,
+    dump_per_query: bool,
+    arms: Vec<(String, Box<dyn sl_core::Adapter>)>,
+}
+
+fn run_arm_sweep(req: SweepRequest<'_>) -> Result<()> {
+    let SweepRequest {
+        dir,
+        dataset_name,
+        k,
+        output,
+        factor_record,
+        split,
+        dump_per_query,
+        arms,
+    } = req;
+    // Test 划分走完整数据集（含 test qrels），只该在预注册之后用一次。
+    let (eval_queries, eval_qrels, docs, train_queries, eval_count_label) = match split {
+        EvalSplit::Test => {
+            let loaded = canonical::load_dataset(dir)?;
+            let ds = loaded.dataset;
+            let scored = ds.scored_query_ids().len();
+            (ds.queries, ds.qrels, ds.docs, 0usize, scored)
+        }
+        EvalSplit::Heldout | EvalSplit::Outer => {
+            let on_outer = split == EvalSplit::Outer;
+            let eval_is: fn(&str) -> bool = if on_outer {
+                |qid| !is_heldout_qid(qid)
+            } else {
+                is_heldout_qid
+            };
+            let train_is: fn(&str) -> bool = if on_outer {
+                is_heldout_qid
+            } else {
+                |qid| !is_heldout_qid(qid)
+            };
+            let train = canonical::load_train_split_for(dir, train_is)?
+                .ok_or_else(|| anyhow::anyhow!("{dataset_name} 没有 train split"))?;
+            let eval = canonical::load_train_split_for(dir, eval_is)?
+                .ok_or_else(|| anyhow::anyhow!("{dataset_name} 没有评测划分"))?;
+            let eval_count = eval.queries.len();
+            (
+                eval.queries,
+                eval.qrels,
+                load_corpus_only(dir)?,
+                train.queries.len(),
+                eval_count,
+            )
+        }
+    };
+
+    let qrels = &eval_qrels;
+    let mut summaries = serde_json::Map::new();
+    let mut per_query_rows: std::collections::BTreeMap<String, Vec<sl_core::PerQuery>> =
+        std::collections::BTreeMap::new();
+
+    for (name, adapter) in arms {
+        let mut adapter = adapter;
+        adapter.index(&docs)?;
+        let mut rankings = std::collections::BTreeMap::new();
+        let mut elapsed = Vec::new();
+        for query in &eval_queries {
+            let started = std::time::Instant::now();
+            let hits = adapter.search(&query.text, k)?;
+            elapsed.push(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+            rankings.insert(
+                query.id.clone(),
+                hits.into_iter()
+                    .map(|(doc, _)| doc)
+                    .collect::<Vec<String>>(),
+            );
+        }
+        let (metrics, per_query) = sl_core::metrics::evaluate_rankings(&rankings, qrels, k);
+        elapsed.sort_unstable();
+        let p50 = elapsed.get(elapsed.len() / 2).copied().unwrap_or(0);
+        let p95 = elapsed
+            .get((elapsed.len() as f64 * 0.95) as usize)
+            .copied()
+            .unwrap_or(0);
+        summaries.insert(
+            name.clone(),
+            serde_json::json!({
+                "recall@100": metrics.recall.get(&100).copied().unwrap_or(0.0),
+                "ndcg@10": metrics.ndcg,
+                "hit@10": metrics.hit.get(&10).copied().unwrap_or(0.0),
+                "hit@100": metrics.hit.get(&100).copied().unwrap_or(0.0),
+                "p50_us": p50,
+                "p95_us": p95,
+                "scored_queries": metrics.queries_scored,
+            }),
+        );
+        per_query_rows.insert(name, per_query);
+    }
+
+    let baseline = per_query_rows.get("bm25").context("缺 bm25 基线")?.clone();
+    let mut paired = serde_json::Map::new();
+    for (name, rows) in &per_query_rows {
+        if name == "bm25" {
+            continue;
+        }
+        let (d_ndcg, se_ndcg, lo_ndcg, hi_ndcg) = paired_bootstrap(&baseline, rows, |row| row.ndcg);
+        let (d_rec, se_rec, lo_rec, hi_rec) = paired_bootstrap(&baseline, rows, |row| {
+            row.recall.get(&100).copied().unwrap_or(0.0)
+        });
+        // hit@10 = 首个相关文档排名 ≤ 10（等价于「top-10 里至少有一条相关」）。
+        let (d_hit, se_hit, lo_hit, hi_hit) =
+            paired_bootstrap(&baseline, rows, |row| match row.first_rel_rank {
+                Some(rank) if rank <= 10 => 1.0,
+                _ => 0.0,
+            });
+        paired.insert(
+            name.clone(),
+            serde_json::json!({
+                "ndcg@10": {"delta": d_ndcg, "se": se_ndcg, "ci95": [lo_ndcg, hi_ndcg],
+                             "delta_min_2se": 2.0 * se_ndcg},
+                "recall@100": {"delta": d_rec, "se": se_rec, "ci95": [lo_rec, hi_rec],
+                                "delta_min_2se": 2.0 * se_rec},
+                "hit@10": {"delta": d_hit, "se": se_hit, "ci95": [lo_hit, hi_hit],
+                            "delta_min_2se": 2.0 * se_hit},
+            }),
+        );
+    }
+
+    // 逐查询 nDCG 可选落盘：报告里只比「每臂 vs bm25」，但任意两臂之间的对比
+    // （例如 concept+β vs uniform+β）需要原始配对值才能算置信区间。
+    let per_query_dump: serde_json::Value = if dump_per_query {
+        serde_json::Value::Object(
+            per_query_rows
+                .iter()
+                .map(|(name, rows)| {
+                    (
+                        name.clone(),
+                        serde_json::Value::Object(
+                            rows.iter()
+                                .map(|row| (row.qid.clone(), serde_json::json!(row.ndcg)))
+                                .collect(),
+                        ),
+                    )
+                })
+                .collect(),
+        )
+    } else {
+        serde_json::Value::Null
+    };
+
+    let report = serde_json::json!({
+        "dataset": dataset_name,
+        "k": k,
+        "test_read": false,
+        "split": {
+            "evaluated_on": split.label(),
+            "evaluated_queries": eval_count_label,
+            "train_queries": train_queries,
+        },
+        "factors": factor_record,
+        "arms": summaries,
+        "paired_vs_bm25": paired,
+        "per_query_ndcg": per_query_dump,
+    });
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("创建 {} 失败", parent.display()))?;
+    }
+    fs::write(output, serde_json::to_vec_pretty(&report)?)
+        .with_context(|| format!("写 {} 失败", output.display()))?;
+
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+/// 字段启发评测：`uniform`（纯 BM25F，不依赖因子）与 `factor`（逐 token 置信度）对照。
+fn run_field_eval(
+    data_dir: &Path,
+    dataset_name: &str,
+    k: usize,
+    output: &Path,
+    split: EvalSplit,
+    _dump_per_query: bool,
+) -> Result<()> {
+    let dir = data_dir.join(dataset_name);
+    let (factor, factor_sha) = sl_adapters::FieldBm25Adapter::load_factor(&dir)?;
+
+    let mut arms: Vec<(String, Box<dyn sl_core::Adapter>)> =
+        vec![("bm25".to_string(), sl_adapters::build("bm25")?)];
+    for beta in [1.0_f64, 2.0, 5.0] {
+        arms.push((
+            format!("uniform_beta{beta}"),
+            Box::new(sl_adapters::FieldBm25Adapter::uniform(beta)),
+        ));
+    }
+    for beta in [1.0_f64, 2.0, 5.0] {
+        arms.push((
+            format!("factor_beta{beta}"),
+            Box::new(sl_adapters::FieldBm25Adapter::with_factor(
+                factor.clone(),
+                beta,
+                Some(factor_sha.clone()),
+            )),
+        ));
+    }
+    // 另一套 conf 定义（条件比例，量级 1e-1）：检验「量纲」是不是 per-token 因子失效的原因。
+    if let Ok((cond_factor, cond_sha)) =
+        sl_adapters::FieldBm25Adapter::load_factor_named(&dir, "field-v1")
+    {
+        for beta in [1.0_f64, 2.0, 5.0] {
+            arms.push((
+                format!("cond_beta{beta}"),
+                Box::new(sl_adapters::FieldBm25Adapter::with_factor(
+                    cond_factor.clone(),
+                    beta,
+                    Some(cond_sha.clone()),
+                )),
+            ));
+        }
+    }
+
+    run_arm_sweep(SweepRequest {
+        dir: &dir,
+        dataset_name,
+        k,
+        output,
+        factor_record: serde_json::json!({
+            "id": "field-v0",
+            "sha256": factor_sha,
+            "tokens": factor.len(),
+        }),
+        split,
+        dump_per_query: false,
+        arms,
+    })
+}
+
+/// 概念启发评测：内核学到的 `token → 规范形式` 因子，与字段加权正交组合。
+///
+/// 四条臂的差别只有两个开关（概念归并 / 字段加权），其余变量全同。
+fn run_concept_eval(
+    data_dir: &Path,
+    dataset_name: &str,
+    k: usize,
+    output: &Path,
+    split: EvalSplit,
+    dump_per_query: bool,
+    artifact_id: &str,
+) -> Result<()> {
+    let dir = data_dir.join(dataset_name);
+    let (concept, concept_sha) =
+        sl_adapters::FieldBm25Adapter::load_concept_named(&dir, artifact_id)?;
+    let merged = concept.len();
+
+    let make = |beta: f64| -> Box<dyn sl_core::Adapter> {
+        let weight = if beta > 0.0 {
+            sl_adapters::FieldWeight::Uniform(beta)
+        } else {
+            sl_adapters::FieldWeight::Off
+        };
+        Box::new(sl_adapters::FieldBm25Adapter::with_concept_and_weight(
+            concept.clone(),
+            Some(concept_sha.clone()),
+            weight,
+        ))
+    };
+
+    let mut arms: Vec<(String, Box<dyn sl_core::Adapter>)> =
+        vec![("bm25".to_string(), sl_adapters::build("bm25")?)];
+    for beta in [1.0_f64, 2.0] {
+        arms.push((
+            format!("uniform_beta{beta}"),
+            Box::new(sl_adapters::FieldBm25Adapter::uniform(beta)),
+        ));
+    }
+    arms.push(("concept".to_string(), make(0.0)));
+    for beta in [1.0_f64, 2.0, 5.0] {
+        arms.push((format!("concept_beta{beta}"), make(beta)));
+    }
+
+    run_arm_sweep(SweepRequest {
+        dir: &dir,
+        dataset_name,
+        k,
+        output,
+        factor_record: serde_json::json!({
+            "id": artifact_id,
+            "kind": "concept",
+            "sha256": concept_sha,
+            "merged_tokens": merged,
+        }),
+        split,
+        dump_per_query,
+        arms,
+    })
 }

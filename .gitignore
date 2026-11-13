@@ -15,3 +15,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+# 评测中间 JSON
+/results/*.json
+
+# 权重工件与二进制文件严禁入库（统一在魔搭社区托管）
+*.bin
+/data/*/artifacts/

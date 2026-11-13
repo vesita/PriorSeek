@@ -52,14 +52,20 @@ impl Bm25LlmAdapter {
         if let Some(obj) = config.as_object_mut() {
             obj.insert("k1".into(), serde_json::json!(K1));
             obj.insert("b".into(), serde_json::json!(B));
-            obj.insert("idf".into(), serde_json::json!("ln(1 + (N - df + 0.5) / (df + 0.5))"));
+            obj.insert(
+                "idf".into(),
+                serde_json::json!("ln(1 + (N - df + 0.5) / (df + 0.5))"),
+            );
             obj.insert("query_terms".into(), serde_json::json!("dedup by token id"));
-            obj.insert("compared_with".into(), serde_json::json!("bm25（词级切分）"));
+            obj.insert(
+                "compared_with".into(),
+                serde_json::json!("bm25（词级切分）"),
+            );
         }
         let info = AdapterInfo::new(
             "bm25-llm",
             "bm25",
-            "0.1.0",
+            "0.2.0",
             "本仓 crates/sl-adapters/src/{bm25_llm,tokenizer_llm}.rs（BM25 公式同 bm25；切分用 LLM BPE tokenizer，非自研）",
         )
         .with_config(config);
@@ -108,7 +114,10 @@ impl Adapter for Bm25LlmAdapter {
             for (token, count) in tf {
                 let slot = token as usize;
                 df[slot] += 1;
-                self.postings[slot].push(Posting { doc: doc_index as u32, tf: count });
+                self.postings[slot].push(Posting {
+                    doc: doc_index as u32,
+                    tf: count,
+                });
             }
             self.ids.push(doc.id.clone());
         }
@@ -120,7 +129,11 @@ impl Adapter for Bm25LlmAdapter {
                 self.idf[token] = (1.0 + (n - df_f + 0.5) / (df_f + 0.5)).ln();
             }
         }
-        self.avg_len = if docs.is_empty() { 0.0 } else { total_len as f64 / docs.len() as f64 };
+        self.avg_len = if docs.is_empty() {
+            0.0
+        } else {
+            total_len as f64 / docs.len() as f64
+        };
         Ok(())
     }
 

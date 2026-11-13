@@ -203,5 +203,8 @@ report.md                人读的对比表（按 nDCG 排序，附可比范围�
 | 数据文件不被手改 | manifest sha256 + `sl run` 默认强校验 |
 | 参数可追溯 | `AdapterInfo.config` 进 `run.json` |
 | 内核工件可审计 | `AdapterInfo.artifacts`（id / sha256 / trained_on / contamination / runtime）进 `run.json`；`sl artifact verify` 复核 |
+| 先验因子契约 | `crates/sl-core/src/types.rs::PriorFactor`：`kind` 封闭枚举 + `deny_unknown_fields` 拒绝用法字段 + `verify`；单测覆盖未知 kind、`alpha`/`weight`/`top_k`、空因子、缺省态 |
+| 因子种类与外壳对应 | `crates/sl-adapters/src/field_bm25.rs::load_factor_dir` 只要 `kind = field`、`load_concept_dir` 只要 `kind = concept`；种类不符构造即失败 |
+| 归并未接上等于没做 | `field_bm25.rs` 的 `concept_mode_with_empty_map_matches_bm25` / `equivalent_to_bm25_without_factor`：空因子时必须与 `bm25` 逐查询一致 |
 | 运行时非 GPU | 工件声明 `runtime.device = cpu`；`sl run` 记录实际设备 |
 | 训练/评测隔离 | 适配器接口无 qrels；训练工具只读 `train` split（contract） |

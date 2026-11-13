@@ -3,8 +3,8 @@
 //! 报告只做一件事：在**同一数据集指纹 + 同一 k** 内给出排序表，并在表头写清这个前提。
 //! 不跨数据集合并、不把不同任务族的分数放在一张表里排名。
 
-use crate::run::RunRecord;
 use crate::run::AdapterResult;
+use crate::run::RunRecord;
 
 pub fn render_markdown(record: &RunRecord) -> String {
     let mut out = String::new();
@@ -111,8 +111,11 @@ pub fn render_markdown(record: &RunRecord) -> String {
         }
     }
 
-    let noisy: Vec<&AdapterResult> =
-        record.adapters.iter().filter(|a| a.unknown_ids > 0 || a.duplicate_ids > 0).collect();
+    let noisy: Vec<&AdapterResult> = record
+        .adapters
+        .iter()
+        .filter(|a| a.unknown_ids > 0 || a.duplicate_ids > 0)
+        .collect();
     if !noisy.is_empty() {
         out.push_str("\n**契约告警**：以下适配器返回过不属于语料的 doc id 或重复 id（已去重/丢弃并计入指标，但说明实现有 bug）：\n");
         for adapter in noisy {
@@ -158,7 +161,12 @@ mod tests {
     use crate::run::{DatasetSummary, EnvInfo};
 
     fn fake_adapter(name: &str, ndcg: f64) -> AdapterResult {
-        let mut metrics = Metrics { mrr_at: 10, ndcg_at: 10, map_at: 100, ..Default::default() };
+        let mut metrics = Metrics {
+            mrr_at: 10,
+            ndcg_at: 10,
+            map_at: 100,
+            ..Default::default()
+        };
         metrics.recall.insert(1, 0.5);
         metrics.recall.insert(10, 0.9);
         metrics.hit.insert(1, 0.8);

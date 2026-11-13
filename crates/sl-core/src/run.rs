@@ -89,9 +89,9 @@ pub fn run_dataset(
 
         for query in &dataset.queries {
             let started = Instant::now();
-            let candidates = adapter
-                .search(&query.text, k)
-                .map_err(|err| anyhow::anyhow!("适配器 {} 检索失败（查询 {}）：{err}", info.name, query.id))?;
+            let candidates = adapter.search(&query.text, k).map_err(|err| {
+                anyhow::anyhow!("适配器 {} 检索失败（查询 {}）：{err}", info.name, query.id)
+            })?;
             let elapsed = started.elapsed().as_secs_f64() * 1000.0;
             search_ms_total += elapsed;
             latency_ms.push(elapsed);
@@ -285,7 +285,10 @@ mod tests {
             ("c".to_string(), 0.5),
         ];
         let (ranking, dup, unknown) = normalize_candidates(candidates, 3, &corpus);
-        assert_eq!(ranking, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            ranking,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
         assert_eq!(dup, 1);
         assert_eq!(unknown, 1);
     }
