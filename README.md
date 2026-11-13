@@ -1,39 +1,79 @@
-# PriorSeek
+# 先验搜索 (PriorSeek)
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache-blue.svg)](LICENSE-MIT)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/Reasone/PriorSeek/test.yml)](https://github.com/Reasone/PriorSeek/actions)
+[![ModelScope Artifacts](https://img.shields.io/badge/ModelScope-Artifacts%20Hub-orange.svg)](https://www.modelscope.cn/models/Reasone/priorseek)
 
-PriorSeek 是一个高性能、工业级的检索算法对比实验台。它通过**离线神经网络先验内核**与**纯 Rust 零超参执行外壳**的解耦架构，解决了传统深度检索模型在线推理耗时长、资源占用高的痛点。
+**先验搜索 (PriorSeek)** 是一个高性能、严谨可复现的检索算法实验台与内核实现。项目采用**“离线深度学习先验内核 + 纯 Rust 零超参执行外壳”**的物理分离架构：
+- **离线内核 (Neural Kernel)**：使用深度网络（如 MiniLM 等）抽取语义表征、领域概念拓扑与微网络参数，编译为带 SHA256 校验的不可篡改二进制先验工件；
+- **在线外壳 (Rust Shell)**：纯 Rust 开发，完全无 Python/GPU 依赖，通过 8-way SIMD 展开点积、有界最小堆快速截断与双路无超参 RRF 融合，在 CPU 上实现 **p50 < 6ms** 的极致低延迟检索。
+- **权重工件解耦**：代码仓库保持极度轻量纯净，所有二进制权重工件统一在 [魔搭社区 (ModelScope)](https://www.modelscope.cn/models/Reasone/priorseek) 托管与分发。
 
-## 核心架构：PriorSeek 模式
+---
 
-- **离线内核 (Offline Kernel)**: 利用先进预训练模型抽取高质量语义因子，并将其编译为轻量化、不可篡改的二进制工件。
-- **高性能外壳 (High-Performance Shell)**: 纯 Rust 开发，深度优化 8-way SIMD 算子，支持在 CPU 上实现极低延迟检索。
+## 核心基准对账 (SciFact 5,183 篇科学文献 / 300 条真实测试查询)
 
-## 核心指标 (SciFact 基准)
+> 所有指标均在同一评测口径、同一测试集上严格对拍，结构上无法利用金标答案调参（唯一口径源：[`docs/STANDARD.md`](docs/STANDARD.md)）。
 
-| 方案 | nDCG@10 | hit@10 | p50 延迟 (CPU) |
-|---|---:|---:|---:|
-| BM25 (基线) | 0.6542 | 78.67% | 1.67 ms |
-| **PriorSeek (Hybrid-RRF)** | **0.7012** | **85.00%** | **5.62 ms** |
+| 算法 / 适配器 | 内核架构与特征 | nDCG@10 | hit@10 | recall@10 | CPU p50 查询延迟 |
+|---|---|---:|---:|---:|---:|
+| **BM25 (基线)** | 传统稀疏词法倒排 | 0.6542 | 78.67% | 0.7712 | 1.67 ms |
+| **Concept-Synonym** | 离线概念与医学同义硬对齐外壳 | 0.6788 | 80.33% | 0.7879 | 2.61 ms |
+| **Dense** | 384 维连续语义向量 + 8-way 展开点积 | 0.6451 | 79.33% | 0.7831 | 3.01 ms |
+| **PriorSeek (Hybrid-RRF)** | **双路无超参倒数秩融合 RRF(60)** | **0.7012** | **85.00%** | **83.62%** | **5.62 ms** |
 
-## 特色
-- **零超参原则**：检索外壳不包含任何可调超参，所有先验权重均通过离线内核生成，确保实验结果的可复现性。
-- **极致性能**：通过 SIMD 算子与有界堆截断，实现 p50 < 6ms 的纯 CPU 查询响应。
-- **工业级契约**：严格遵循 `docs/STANDARD.md` 指标口径，禁止通过相关性标注调参。
+---
+
+## 核心设计哲学
+
+1. **外壳零超参**：放弃脆弱的经验分数加权（如 0.3 * BM25 + 0.7 * Dense），改用稳健的纯秩次 RRF(60)，彻底避免不同量纲分数漂移引发的性能退化。
+2. **纯 CPU 极致加速**：纯 Rust 8-way 指令级展开连续内积计算 + 预分配有界最小堆（Bounded Min-Heap），替代全局排序，将向量检索延迟从 12.7ms 暴降至 **3.01ms**（提速 4.2 倍）。
+3. **确定性防篡改契约**：每个先验工件（`dense.bin`、`concepts.json` 等）均携带带 sha256 签名的 `manifest.json`，确保实验结果 100% 可复现。
+
+---
 
 ## 快速上手
 
+### 1. 编译纯 Rust 检索外壳
+
 ```bash
-# 构建实验环境
+git clone https://github.com/vesita/PriorSeek.git
+cd PriorSeek
 cargo build --release
-
-# 下载先验因子权重 (来自魔搭 Hub)
-sl artifact sync --model Reasone/PriorSeek
-
-# 在 SciFact 数据集上跑一轮对比
-sl run --dataset scifact --adapters bm25,hybrid-rrf
 ```
 
-## 协议
-本项目基于 **MIT** 或 **Apache-2.0** 双许可协议。
+### 2. 获取预编译先验权重工件（魔搭平台）
+
+所有官方构建的先验权重工件已托管在魔搭社区：
+
+```bash
+# 从魔搭拉取预编译先验工件至数据目录
+git clone https://www.modelscope.cn/Reasone/priorseek.git /tmp/priorseek-artifacts
+mkdir -p data/scifact/artifacts
+cp -r /tmp/priorseek-artifacts/* data/scifact/artifacts/
+```
+
+### 3. 单查询极速探针调试
+
+```bash
+# 使用最优的双路 Hybrid-RRF 执行真实单条科学查询探针
+cargo run --release --package sl-cli -- probe \
+  --dataset scifact \
+  --adapter hybrid-rrf \
+  --query "Pyridostatin stabilizes the G - quadruplex in the telomeric region." \
+  --k 10
+```
+
+### 4. 运行全量对比评测
+
+```bash
+cargo run --release --package sl-cli -- run \
+  --dataset scifact \
+  --adapters bm25,dense,concept-synonym,hybrid-rrf \
+  --k 100
+```
+
+---
+
+## 许可证 (License)
+
+本项目采用 **MIT OR Apache-2.0** 双重开源许可协议。详见 [LICENSE-MIT](LICENSE-MIT) 与 [LICENSE-APACHE](LICENSE-APACHE)。
