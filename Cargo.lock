@@ -1077,10 +1077,21 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sl-bridge",
  "sl-core",
  "sl-engine",
  "tempfile",
  "tokenizers",
+]
+
+[[package]]
+name = "sl-bridge"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "sl-core",
+ "sl-engine",
 ]
 
 [[package]]

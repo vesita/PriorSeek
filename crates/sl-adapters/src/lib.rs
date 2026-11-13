@@ -41,6 +41,7 @@ pub use field_bm25::{FieldBm25Adapter, FieldWeight};
 pub use flow_match::FlowMatchAdapter;
 pub use gated_fusion::GatedFusionAdapter;
 pub use hybrid_rrf::{DenseAdapter, HybridRrfAdapter};
+pub use sl_bridge::RrfBridge;
 pub use logic_exec::LogicExecutionAdapter;
 pub use neural_topo::NeuralTopoAdapter;
 pub use rs::RelationSearchAdapter;

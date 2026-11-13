@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use sl_core::{Adapter, AdapterInfo, Doc};
-use sl_engine::dense::{rrf_fuse, DenseIndex};
+use sl_engine::dense::DenseIndex;
 use std::collections::HashMap;
 
 /// 单路稠密向量适配器 (纯 CPU 极速点积)。
@@ -167,9 +167,7 @@ impl Adapter for DenseAdapter {
 
 /// 双路无超参 RRF 混合检索适配器。
 pub struct HybridRrfAdapter {
-    info: AdapterInfo,
-    lexical: Box<dyn Adapter>,
-    dense: DenseAdapter,
+    inner: sl_bridge::RrfBridge,
 }
 
 impl HybridRrfAdapter {
@@ -178,52 +176,27 @@ impl HybridRrfAdapter {
             "concept-synonym-v1",
             "concept-synonym",
         )?);
-        let dense = DenseAdapter::new()?;
-
-        let config = serde_json::json!({
-            "fusion": "reciprocal_rank_fusion (RRF-60)",
-            "hyperparameters": "none (pure rank reciprocity, no arbitrary weight)",
-            "route_a": "concept-synonym (lexical & morphological & domain synonyms)",
-            "route_b": "dense (all-MiniLM-L6-v2 384-dim semantic embeddings)",
-        });
-
-        Ok(Self {
-            info: AdapterInfo::new(
-                "hybrid-rrf",
-                "hybrid-reciprocal-rank-fusion",
-                "0.2.0",
-                "双路融合外壳：sl-engine::rrf_fuse (RRF-60)；词法路：concept-synonym；语义路：dense-v0",
-            )
-            .with_config(config),
-            lexical,
-            dense,
-        })
+        let dense = Box::new(DenseAdapter::new()?);
+        let inner = sl_bridge::RrfBridge::new(
+            "hybrid-rrf",
+            "hybrid-reciprocal-rank-fusion",
+            "通用 RRF 外壳 + concept-synonym + dense-v0",
+            vec![lexical, dense],
+        );
+        Ok(Self { inner })
     }
 }
 
 impl Adapter for HybridRrfAdapter {
     fn info(&self) -> &AdapterInfo {
-        &self.info
+        self.inner.info()
     }
 
     fn index(&mut self, docs: &[Doc]) -> Result<()> {
-        self.lexical.index(docs)?;
-        self.dense.index(docs)?;
-        Ok(())
+        self.inner.index(docs)
     }
 
     fn search(&mut self, query: &str, k: usize) -> Result<Vec<(String, f64)>> {
-        // 两路各检索 Top-60 候选集合
-        let candidate_depth = k.max(60);
-        let hits_lexical = self.lexical.search(query, candidate_depth)?;
-        let hits_dense = self.dense.search(query, candidate_depth)?;
-
-        if hits_dense.is_empty() {
-            // 如果稠密路无对应查询向量，优雅退化为纯词法路
-            return Ok(hits_lexical.into_iter().take(k).collect());
-        }
-
-        // 零超参数无偏倒数排名融合 (RRF-60)
-        Ok(rrf_fuse(&hits_lexical, &hits_dense, k, 60.0))
+        self.inner.search(query, k)
     }
 }

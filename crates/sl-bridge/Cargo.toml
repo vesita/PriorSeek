@@ -1,0 +1,12 @@
+[package]
+name = "sl-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "算法桥接：把任意检索路由（词法/稠密/图/记忆）统一成 Adapter 并用无参 RRF 融合"
+
+[dependencies]
+sl-core = { path = "../sl-core" }
+sl-engine = { path = "../sl-engine" }
+anyhow.workspace = true
+serde_json.workspace = true

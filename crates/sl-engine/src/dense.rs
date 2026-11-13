@@ -143,16 +143,32 @@ pub fn rrf_fuse(
     k: usize,
     rrf_k: f64,
 ) -> Vec<(String, f64)> {
-    let mut scores: HashMap<String, f64> = HashMap::new();
+    rrf_fuse_many(&[list_a, list_b], k, rrf_k)
+}
 
-    for (rank, (doc_id, _)) in list_a.iter().enumerate() {
-        let score = 1.0 / (rrf_k + (rank as f64) + 1.0);
-        *scores.entry(doc_id.clone()).or_insert(0.0) += score;
+/// 任意路数的无参数 RRF 融合：每路只贡献名次，不比较分数。
+///
+/// 同一路里重复出现的 doc 只按第一次出现计票（防止某路重复条目放大权重）；
+/// 不存在的路/空路自然跳过。这个入口让 RRF 外壳不再硬编码“两路”，
+/// 记忆召回这类需要“词法 + 短语 + 稠密”多路的场景可以直接复用。
+pub fn rrf_fuse_many(
+    lists: &[&[(String, f64)]],
+    k: usize,
+    rrf_k: f64,
+) -> Vec<(String, f64)> {
+    if k == 0 {
+        return Vec::new();
     }
-
-    for (rank, (doc_id, _)) in list_b.iter().enumerate() {
-        let score = 1.0 / (rrf_k + (rank as f64) + 1.0);
-        *scores.entry(doc_id.clone()).or_insert(0.0) += score;
+    let mut scores: HashMap<String, f64> = HashMap::new();
+    for list in lists {
+        let mut seen = std::collections::HashSet::new();
+        for (rank, (doc_id, _)) in list.iter().enumerate() {
+            if !seen.insert(doc_id) {
+                continue;
+            }
+            let score = 1.0 / (rrf_k + (rank as f64) + 1.0);
+            *scores.entry(doc_id.clone()).or_insert(0.0) += score;
+        }
     }
 
     let mut fused: Vec<(String, f64)> = scores.into_iter().collect();
@@ -196,6 +212,26 @@ mod tests {
 
         // 两路均在头部的文档获得极高的累加倒数排名
         let fused = rrf_fuse(&list_a, &list_b, 2, 60.0);
+        assert_eq!(fused.len(), 2);
+    }
+
+    #[test]
+    fn rrf_fuse_many_supports_more_than_two_routes_without_double_counting() {
+        let a = vec![("d1".to_string(), 10.0), ("d2".to_string(), 5.0)];
+        let b = vec![("d2".to_string(), 0.9), ("d1".to_string(), 0.8)];
+        let c = vec![("d3".to_string(), 0.7), ("d1".to_string(), 0.6)];
+        let fused = rrf_fuse_many(&[&a, &b, &c], 3, 60.0);
+        assert_eq!(fused.len(), 3);
+        assert_eq!(fused[0].0, "d1", "三路都靠前的 d1 应融合到第一");
+        assert!(fused.iter().all(|(id, _)| id != "d3" || fused[0].0 == "d1"));
+    }
+
+    #[test]
+    fn rrf_fuse_many_ignores_duplicate_entries_inside_one_route() {
+        let a = vec![("d1".to_string(), 10.0), ("d1".to_string(), 9.0)];
+        let b = vec![("d2".to_string(), 1.0)];
+        let fused = rrf_fuse_many(&[&a, &b], 2, 60.0);
+        assert_eq!(fused[0].0, "d1");
         assert_eq!(fused.len(), 2);
     }
 }
