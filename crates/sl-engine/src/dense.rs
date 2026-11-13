@@ -151,11 +151,7 @@ pub fn rrf_fuse(
 /// 同一路里重复出现的 doc 只按第一次出现计票（防止某路重复条目放大权重）；
 /// 不存在的路/空路自然跳过。这个入口让 RRF 外壳不再硬编码“两路”，
 /// 记忆召回这类需要“词法 + 短语 + 稠密”多路的场景可以直接复用。
-pub fn rrf_fuse_many(
-    lists: &[&[(String, f64)]],
-    k: usize,
-    rrf_k: f64,
-) -> Vec<(String, f64)> {
+pub fn rrf_fuse_many(lists: &[&[(String, f64)]], k: usize, rrf_k: f64) -> Vec<(String, f64)> {
     if k == 0 {
         return Vec::new();
     }

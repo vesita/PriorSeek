@@ -13,11 +13,7 @@ use anyhow::Result;
 use sl_core::{Adapter, AdapterInfo, Doc};
 
 /// 任意路数的 RRF 融合。每路只在内部去重，按名次计票，不比较分数。
-pub fn fuse_ranked(
-    routes: &[&[(String, f64)]],
-    k: usize,
-    rrf_k: f64,
-) -> Vec<(String, f64)> {
+pub fn fuse_ranked(routes: &[&[(String, f64)]], k: usize, rrf_k: f64) -> Vec<(String, f64)> {
     sl_engine::dense::rrf_fuse_many(routes, k, rrf_k)
 }
 
@@ -43,14 +39,12 @@ impl RrfBridge {
             .iter()
             .map(|route| route.info().name.clone())
             .collect();
-        let info = AdapterInfo::new(name, family, "0.2.0", source).with_config(
-            serde_json::json!({
-                "fusion": "reciprocal_rank_fusion",
-                "rrf_k": 60.0,
-                "hyperparameters": "none (rank reciprocity only)",
-                "routes": route_names,
-            }),
-        );
+        let info = AdapterInfo::new(name, family, "0.2.0", source).with_config(serde_json::json!({
+            "fusion": "reciprocal_rank_fusion",
+            "rrf_k": 60.0,
+            "hyperparameters": "none (rank reciprocity only)",
+            "routes": route_names,
+        }));
         Self {
             info,
             routes,
@@ -65,7 +59,10 @@ impl RrfBridge {
     }
 
     pub fn route_names(&self) -> Vec<&str> {
-        self.routes.iter().map(|route| route.info().name.as_str()).collect()
+        self.routes
+            .iter()
+            .map(|route| route.info().name.as_str())
+            .collect()
     }
 }
 
@@ -150,8 +147,8 @@ mod tests {
 
     #[test]
     fn fuse_ranked_keeps_rank_reciprocity() {
-        let a = [( "d1".to_string(), 100.0), ("d2".to_string(), 1.0)];
-        let b = [( "d2".to_string(), 100.0), ("d1".to_string(), 1.0)];
+        let a = [("d1".to_string(), 100.0), ("d2".to_string(), 1.0)];
+        let b = [("d2".to_string(), 100.0), ("d1".to_string(), 1.0)];
         let fused = fuse_ranked(&[&a, &b], 2, 60.0);
         assert_eq!(fused.len(), 2);
         assert!(fused.iter().all(|(_, score)| *score > 0.0));

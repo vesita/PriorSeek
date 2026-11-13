@@ -41,12 +41,12 @@ pub use field_bm25::{FieldBm25Adapter, FieldWeight};
 pub use flow_match::FlowMatchAdapter;
 pub use gated_fusion::GatedFusionAdapter;
 pub use hybrid_rrf::{DenseAdapter, HybridRrfAdapter};
-pub use sl_bridge::RrfBridge;
 pub use logic_exec::LogicExecutionAdapter;
 pub use neural_topo::NeuralTopoAdapter;
 pub use rs::RelationSearchAdapter;
 pub use seq::SeqAdapter;
 pub use shell::ShellAdapter;
+pub use sl_bridge::RrfBridge;
 pub use sparse_route::SparseRouteAdapter;
 
 /// 当前可用的适配器名（进 `sl run --adapters` 的取值），顺序即展示顺序。
