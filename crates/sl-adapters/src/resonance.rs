@@ -589,4 +589,159 @@ impl Adapter for CausalCoherentAdapter {
     }
 }
 
+const STOPWORDS_SET: &[&str] = &[
+    "a", "an", "the", "in", "on", "at", "by", "for", "with", "about",
+    "against", "between", "into", "through", "during", "before", "after",
+    "above", "below", "to", "from", "up", "down", "is", "are", "was",
+    "were", "be", "been", "being", "have", "has", "had", "do", "does",
+    "did", "shall", "will", "should", "would", "may", "might", "must",
+    "can", "could", "of", "and", "or", "nor", "that", "this", "these",
+    "those", "which", "who", "whom", "whose", "it", "its", "they", "their",
+];
+
+fn is_predicate_or_stopword(w: &str) -> bool {
+    CAUSAL_POS_WORDS.contains(&w) || CAUSAL_NEG_WORDS.contains(&w) || STOPWORDS_SET.contains(&w)
+}
+
+fn extract_argument_query(query: &str) -> String {
+    let lower = query.to_ascii_lowercase();
+    let mut args = Vec::new();
+    for word in lower.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+        if word.len() > 1 && !is_predicate_or_stopword(word) {
+            args.push(word);
+        }
+    }
+    if args.is_empty() {
+        query.to_string()
+    } else {
+        args.join(" ")
+    }
+}
+
+/// 论元与谓词结构解耦流形共振适配器 (Decoupled Resonance Adapter)。
+///
+/// 架构颠覆：
+/// 1. 第一阶段候选势场解耦：词法路仅用核心名词实体论元 (Arguments) 检索，杜绝谓词词频波动干扰；
+/// 2. 第二阶段谓词相位相干：在线识别查询因果极性，匹配文档因果先验；
+///    同向因果产生 +0.25 共振，反事实对立实施 -0.75 强阻尼相消，强制反事实文章退出前排！
+pub struct DecoupledResonanceAdapter {
+    inner: ResonanceAdapter,
+    doc_polarities: HashMap<String, i8>,
+}
+
+impl DecoupledResonanceAdapter {
+    pub fn new() -> Result<Self> {
+        let mut inner = ResonanceAdapter::whitened()?;
+        inner.info = AdapterInfo::new(
+            "decoupled-resonance",
+            "decoupled-resonance",
+            "0.2.0",
+            "PriorSeek 论元与谓词结构解耦共振 (实体论元倒排锚定 + 因果谓词相位相干阻尼)",
+        )
+        .with_config(serde_json::json!({
+            "paradigm": "decoupled_arguments_predicate_resonance",
+            "gamma": DEFAULT_GAMMA,
+            "beta": 0.8,
+            "dense_route": "dense-whitened-v1",
+            "phase_boost": 0.25,
+            "counterfactual_damping": -0.75,
+        }));
+
+        let pred_dir = std::path::Path::new("data/scifact/artifacts/predicate-v1");
+        let doc_file = pred_dir.join("doc_polarities.json");
+
+        let doc_polarities: HashMap<String, i8> = if doc_file.is_file() {
+            let bytes = std::fs::read(doc_file)?;
+            serde_json::from_slice(&bytes).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
+        Ok(Self {
+            inner,
+            doc_polarities,
+        })
+    }
+}
+
+impl Adapter for DecoupledResonanceAdapter {
+    fn info(&self) -> &AdapterInfo {
+        &self.inner.info
+    }
+
+    fn index(&mut self, docs: &[Doc]) -> Result<()> {
+        self.inner.index(docs)
+    }
+
+    fn search(&mut self, query: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+
+        let dense = match self.inner.dense_index.as_ref() {
+            Some(d) => d,
+            None => return self.inner.lexical.search(query, k),
+        };
+
+        let query_vec = match self.inner.query_embeddings.get(query) {
+            Some(v) => v.as_slice(),
+            None => return self.inner.lexical.search(query, k),
+        };
+
+        // 1. 结构解耦：提取实体论元子查询，同时在线提取谓词因果极性
+        let arg_query = extract_argument_query(query);
+        let q_pol = detect_query_polarity(query);
+
+        // 2. 双轨候选势场激发：
+        // 词法路仅使用实体论元检索，100% 锁定核心物理对象；稠密向量路使用整句语义
+        let candidate_pool_size = k.max(60);
+        let lex_candidates = self
+            .inner
+            .lexical
+            .search_with_coverage(&arg_query, candidate_pool_size)?;
+        let dense_candidates = dense.search(query_vec, candidate_pool_size);
+
+        let mut candidate_map: HashMap<String, (f64, f64)> =
+            HashMap::with_capacity(candidate_pool_size * 2);
+
+        for (doc_id, score, cover_ratio) in lex_candidates {
+            candidate_map.insert(doc_id, (score, cover_ratio));
+        }
+
+        for (doc_id, _) in dense_candidates {
+            candidate_map.entry(doc_id).or_insert((0.0, 0.2));
+        }
+
+        // 3. 结构相干能量推演与强力反事实阻尼
+        let mut resonant_candidates: Vec<(String, f64)> = Vec::with_capacity(candidate_map.len());
+
+        for (doc_id, (lex_score, cover_ratio)) in candidate_map {
+            let dot = dense.dot_with_id(&doc_id, query_vec).unwrap_or(0.0f32) as f64;
+            let phi_lex = (lex_score.max(0.0) / 10.0).ln_1p();
+            let penalty = (0.2 + 0.8 * cover_ratio).ln();
+
+            // 谓词因果相干相位调节
+            let d_pol = self.doc_polarities.get(&doc_id).copied().unwrap_or(0);
+            let phase = if q_pol != 0 && d_pol != 0 {
+                if q_pol == d_pol {
+                    0.25 // 同向因果共振增强
+                } else {
+                    -0.75 // 反事实强相消阻尼！
+                }
+            } else {
+                0.0
+            };
+
+            let log_resonance =
+                self.inner.gamma * dot + phi_lex + self.inner.beta * penalty + phase;
+            resonant_candidates.push((doc_id, log_resonance));
+        }
+
+        resonant_candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        resonant_candidates.truncate(k);
+
+        Ok(resonant_candidates)
+    }
+}
+
 

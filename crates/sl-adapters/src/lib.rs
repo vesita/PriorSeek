@@ -47,7 +47,8 @@ pub use hybrid_rrf::{
 pub use logic_exec::LogicExecutionAdapter;
 pub use neural_topo::NeuralTopoAdapter;
 pub use resonance::{
-    CausalCoherentAdapter, ResonanceAdapter, StructuralResonanceAdapter,
+    CausalCoherentAdapter, DecoupledResonanceAdapter, ResonanceAdapter,
+    StructuralResonanceAdapter,
 };
 pub use rs::RelationSearchAdapter;
 pub use seq::SeqAdapter;
@@ -79,6 +80,7 @@ pub fn names() -> Vec<&'static str> {
         "resonance-whitened",
         "structural-resonance",
         "causal-coherent",
+        "decoupled-resonance",
         "gated-fusion",
         "bm25-llm",
         "bow",
@@ -118,6 +120,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "resonance-whitened" => Box::new(ResonanceAdapter::whitened()?),
         "structural-resonance" => Box::new(StructuralResonanceAdapter::new()?),
         "causal-coherent" => Box::new(CausalCoherentAdapter::new()?),
+        "decoupled-resonance" => Box::new(DecoupledResonanceAdapter::new()?),
         "gated-fusion" => Box::new(GatedFusionAdapter::new()?),
         "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
         "bow" => Box::new(ShellAdapter::bow()?),
@@ -173,6 +176,7 @@ mod tests {
                 "resonance-whitened",
                 "structural-resonance",
                 "causal-coherent",
+                "decoupled-resonance",
                 "gated-fusion",
                 "bm25-llm",
                 "bow",
