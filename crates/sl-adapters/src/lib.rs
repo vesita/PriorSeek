@@ -40,7 +40,9 @@ pub use faq::{FaqAdapter, Scheme};
 pub use field_bm25::{FieldBm25Adapter, FieldWeight};
 pub use flow_match::FlowMatchAdapter;
 pub use gated_fusion::GatedFusionAdapter;
-pub use hybrid_rrf::{DenseAdapter, HybridRrfAdapter, TriHybridRrfAdapter};
+pub use hybrid_rrf::{
+    DenseAdapter, HybridRrfAdapter, QueryGatedRrfAdapter, TriHybridRrfAdapter,
+};
 pub use logic_exec::LogicExecutionAdapter;
 pub use neural_topo::NeuralTopoAdapter;
 pub use rs::RelationSearchAdapter;
@@ -67,6 +69,7 @@ pub fn names() -> Vec<&'static str> {
         "dense",
         "hybrid-rrf",
         "tri-hybrid-rrf",
+        "query-gated-rrf",
         "gated-fusion",
         "bm25-llm",
         "bow",
@@ -100,6 +103,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "dense" => Box::new(DenseAdapter::new()?),
         "hybrid-rrf" => Box::new(HybridRrfAdapter::new()?),
         "tri-hybrid-rrf" => Box::new(TriHybridRrfAdapter::new()?),
+        "query-gated-rrf" => Box::new(QueryGatedRrfAdapter::new()?),
         "gated-fusion" => Box::new(GatedFusionAdapter::new()?),
         "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
         "bow" => Box::new(ShellAdapter::bow()?),
@@ -149,6 +153,7 @@ mod tests {
                 "dense",
                 "hybrid-rrf",
                 "tri-hybrid-rrf",
+                "query-gated-rrf",
                 "gated-fusion",
                 "bm25-llm",
                 "bow",

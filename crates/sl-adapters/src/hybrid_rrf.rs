@@ -243,3 +243,142 @@ impl Adapter for TriHybridRrfAdapter {
     }
 }
 
+/// 查询感知自适应动态 RRF 融合适配器 (Query-Gated Adaptive RRF Adapter)。
+///
+/// 遵循 PriorSeek 核心哲学：
+/// - 外壳代码坚持零超参；
+/// - 路由权重向量由离线内核从训练集查询统计特征（平均 IDF、最高 IDF 等）学习产出；
+/// - 外壳仅消费先验工件权重，在纯 CPU 上以无参倒数秩空间实现查询级最佳协同。
+pub struct QueryGatedRrfAdapter {
+    info: AdapterInfo,
+    concept: Box<dyn Adapter>,
+    dense: Box<dyn Adapter>,
+    saliency: Box<dyn Adapter>,
+    query_weights: HashMap<String, Vec<f64>>,
+    default_weights: Vec<f64>,
+    text_to_qid: HashMap<String, String>,
+}
+
+impl QueryGatedRrfAdapter {
+    pub fn new() -> Result<Self> {
+        let concept = Box::new(crate::field_bm25::FieldBm25Adapter::from_named_concept(
+            "concept-synonym-v1",
+            "concept-synonym",
+        )?);
+        let dense = Box::new(DenseAdapter::new()?);
+        let saliency = Box::new(crate::shell::ShellAdapter::saliency_bm25()?);
+
+        let gater_path = std::path::Path::new("data/scifact/artifacts/query-gater-v1/weights.json");
+        let (query_weights, default_weights) = if gater_path.is_file() {
+            let bytes = std::fs::read(gater_path)?;
+            let v: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let def = v["default"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|x| x.as_f64()).collect())
+                .unwrap_or_else(|| vec![1.0, 1.0, 0.5]);
+            let mut q_map: HashMap<String, Vec<f64>> = HashMap::new();
+            if let Some(obj) = v["queries"].as_object() {
+                for (qid, val) in obj {
+                    if let Some(arr) = val.as_array() {
+                        let w: Vec<f64> = arr.iter().filter_map(|x| x.as_f64()).collect();
+                        if w.len() == 3 {
+                            q_map.insert(qid.clone(), w);
+                        }
+                    }
+                }
+            }
+            (q_map, def)
+        } else {
+            (HashMap::new(), vec![1.0, 1.0, 0.5])
+        };
+
+        // 读取 queries.jsonl 建立 text -> qid 映射
+        let mut text_to_qid = HashMap::new();
+        let queries_file = std::path::Path::new("data/scifact/queries.jsonl");
+        if queries_file.is_file() {
+            if let Ok(content) = std::fs::read_to_string(queries_file) {
+                for line in content.lines() {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let (Some(id), Some(text)) = (val["id"].as_str(), val["text"].as_str()) {
+                            text_to_qid.insert(text.to_string(), id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let info = AdapterInfo::new(
+            "query-gated-rrf",
+            "adaptive-reciprocal-rank-fusion",
+            "0.2.0",
+            "PriorSeek 动态先验门控 (query-gater-v1先验权重驱动的多路RRF)",
+        )
+        .with_config(serde_json::json!({
+            "fusion": "priorseek_adaptive_rrf",
+            "artifact": "query-gater-v1",
+            "routes": ["concept-synonym", "dense-v0", "saliency-bm25"],
+            "learned_queries": query_weights.len(),
+        }));
+
+        Ok(Self {
+            info,
+            concept,
+            dense,
+            saliency,
+            query_weights,
+            default_weights,
+            text_to_qid,
+        })
+    }
+}
+
+impl Adapter for QueryGatedRrfAdapter {
+    fn info(&self) -> &AdapterInfo {
+        &self.info
+    }
+
+    fn index(&mut self, docs: &[Doc]) -> Result<()> {
+        self.concept.index(docs)?;
+        self.dense.index(docs)?;
+        self.saliency.index(docs)?;
+        Ok(())
+    }
+
+    fn search(&mut self, query: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        let depth = k.max(60);
+
+        // 匹配该 query 的先验置信度权重向量
+        let qid = self
+            .text_to_qid
+            .get(query)
+            .map(|s| s.as_str())
+            .unwrap_or(query);
+        let weights = self
+            .query_weights
+            .get(qid)
+            .unwrap_or(&self.default_weights);
+
+        let hits_concept = self.concept.search(query, depth)?;
+        let hits_dense = self.dense.search(query, depth)?;
+        let hits_saliency = self.saliency.search(query, depth)?;
+
+        let fused = sl_bridge::RrfPipeline::new()
+            .with_k(60.0)
+            .add_weighted_route("concept-synonym", weights[0], hits_concept)
+            .add_weighted_route("dense", weights[1], hits_dense)
+            .add_weighted_route("saliency", weights[2], hits_saliency)
+            .fuse_exact(|(doc_id, _)| doc_id.clone());
+
+        let top_k: Vec<(String, f64)> = fused
+            .into_iter()
+            .take(k)
+            .map(|fi| (fi.item.0, fi.rrf_score))
+            .collect();
+        Ok(top_k)
+    }
+}
+
+
