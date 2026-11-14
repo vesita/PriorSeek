@@ -34,6 +34,7 @@ mod shell;
 mod sparse_route;
 pub mod tokenize;
 pub mod tokenizer_llm;
+pub mod cpf_adapter;
 
 pub use bm25::Bm25Adapter;
 pub use bm25_llm::Bm25LlmAdapter;
@@ -50,6 +51,7 @@ pub use resonance::{
     CausalCoherentAdapter, DecoupledResonanceAdapter, ResonanceAdapter,
     StructuralResonanceAdapter,
 };
+pub use cpf_adapter::CpfAdapter;
 pub use rs::RelationSearchAdapter;
 pub use seq::SeqAdapter;
 pub use shell::ShellAdapter;
