@@ -4,9 +4,9 @@
 //! 重构为高维流形上的“离线概念先验势场”与“连续语义场”的非线性相干共振算子。
 //!
 //! 物理数学模型：
-//! Energy(d, q) = (1.0 + phi_lex(d, q)) * exp( gamma * phi_dense(d, q) )
+//! Energy(d, q) = (1.0 + phi_lex(d, q)) * exp( gamma * phi_dense(d, q) ) * (0.2 + 0.8 * Cover(d, q))^beta
 //! 在对数势能空间中计算：
-//! LogScore(d, q) = gamma * <q_dense, d_dense> + ln(1.0 + phi_lex(d, q))
+//! LogScore(d, q) = gamma * <q_dense, d_dense> + ln(1.0 + phi_lex(d, q)) + beta * ln(0.2 + 0.8 * Cover(d, q))
 
 use anyhow::{Context, Result};
 use sl_core::{Adapter, AdapterInfo, Doc};
@@ -18,19 +18,21 @@ pub const DEFAULT_GAMMA: f64 = 3.6;
 
 pub struct ResonanceAdapter {
     info: AdapterInfo,
-    lexical: Box<dyn Adapter>,
+    lexical: crate::field_bm25::FieldBm25Adapter,
     dense_index: Option<DenseIndex>,
     query_embeddings: HashMap<String, Vec<f32>>,
     artifact_dir: std::path::PathBuf,
     gamma: f64,
+    beta: f64,
 }
 
 impl ResonanceAdapter {
+    /// 基础先验流形共振算子 (beta = 0.0)
     pub fn new() -> Result<Self> {
-        let lexical = Box::new(crate::field_bm25::FieldBm25Adapter::from_named_concept(
+        let lexical = crate::field_bm25::FieldBm25Adapter::from_named_concept(
             "concept-synonym-v1",
             "concept-synonym",
-        )?);
+        )?;
 
         let artifact_dir = std::path::PathBuf::from("data/scifact/artifacts/dense-v0");
         let query_embeddings = Self::load_query_embeddings(&artifact_dir).unwrap_or_default();
@@ -44,6 +46,7 @@ impl ResonanceAdapter {
         .with_config(serde_json::json!({
             "paradigm": "coherent_manifold_resonance",
             "gamma": DEFAULT_GAMMA,
+            "beta": 0.0,
             "lexical_route": "concept-synonym-v1",
             "dense_route": "dense-v0 (384-dim continuous manifold)",
         }));
@@ -55,11 +58,72 @@ impl ResonanceAdapter {
             query_embeddings,
             artifact_dir,
             gamma: DEFAULT_GAMMA,
+            beta: 0.0,
+        })
+    }
+
+    /// 合取命题覆盖度相干流形共振算子 (beta = 0.8)
+    pub fn conjunctive() -> Result<Self> {
+        let mut adapter = Self::new()?;
+        adapter.beta = 0.8;
+        adapter.info = AdapterInfo::new(
+            "resonance-conjunctive",
+            "manifold-resonance",
+            "0.2.0",
+            "PriorSeek 合取命题覆盖度相干流形共振 (破除单专有名词垄断欺骗)",
+        )
+        .with_config(serde_json::json!({
+            "paradigm": "conjunctive_manifold_resonance",
+            "gamma": DEFAULT_GAMMA,
+            "beta": 0.8,
+            "lexical_route": "concept-synonym-v1 (with_coverage)",
+            "dense_route": "dense-v0 (384-dim continuous manifold)",
+        }));
+        Ok(adapter)
+    }
+
+    /// 各向异性流形白化投影 + 合取命题覆盖度相干流形共振算子
+    pub fn whitened() -> Result<Self> {
+        let lexical = crate::field_bm25::FieldBm25Adapter::from_named_concept(
+            "concept-synonym-v1",
+            "concept-synonym",
+        )?;
+
+        let artifact_dir = std::path::PathBuf::from("data/scifact/artifacts/dense-whitened-v1");
+        let query_embeddings = Self::load_query_embeddings(&artifact_dir).unwrap_or_default();
+
+        let info = AdapterInfo::new(
+            "resonance-whitened",
+            "manifold-resonance",
+            "0.2.0",
+            "PriorSeek 各向异性流形白化投影 + 合取覆盖共振算子 (SVD白化度规消解锥形各向异性)",
+        )
+        .with_config(serde_json::json!({
+            "paradigm": "anisotropic_whitened_manifold_resonance",
+            "gamma": DEFAULT_GAMMA,
+            "beta": 0.8,
+            "lexical_route": "concept-synonym-v1 (with_coverage)",
+            "dense_route": "dense-whitened-v1 (SVD-whitened 384-dim continuous manifold)",
+        }));
+
+        Ok(Self {
+            info,
+            lexical,
+            dense_index: None,
+            query_embeddings,
+            artifact_dir,
+            gamma: DEFAULT_GAMMA,
+            beta: 0.8,
         })
     }
 
     pub fn with_gamma(mut self, gamma: f64) -> Self {
         self.gamma = gamma;
+        self
+    }
+
+    pub fn with_beta(mut self, beta: f64) -> Self {
+        self.beta = beta;
         self
     }
 
@@ -167,31 +231,40 @@ impl Adapter for ResonanceAdapter {
             None => return self.lexical.search(query, k),
         };
 
-        // 阶段一：激发候选势场池 (取前 60~80 篇词法与向量候选的并集)
+        // 阶段一：激发候选势场池 (取前 60~80 篇词法与向量候选的并集，附带覆盖度)
         let candidate_pool_size = k.max(60);
-        let lex_candidates = self.lexical.search(query, candidate_pool_size)?;
+        let lex_candidates = self.lexical.search_with_coverage(query, candidate_pool_size)?;
         let dense_candidates = dense.search(query_vec, candidate_pool_size);
 
-        let mut candidate_map: HashMap<String, f64> = HashMap::with_capacity(candidate_pool_size * 2);
-        for (doc_id, score) in lex_candidates {
-            candidate_map.insert(doc_id, score);
+        let mut candidate_map: HashMap<String, (f64, f64)> =
+            HashMap::with_capacity(candidate_pool_size * 2);
+
+        for (doc_id, score, cover_ratio) in lex_candidates {
+            candidate_map.insert(doc_id, (score, cover_ratio));
         }
 
         for (doc_id, _) in dense_candidates {
-            candidate_map.entry(doc_id).or_insert(0.0);
+            candidate_map.entry(doc_id).or_insert((0.0, 0.2));
         }
 
         // 阶段二：相干共振算子推演 (Resonance Operator Execution)
-        // LogScore(d) = gamma * <q, d> + ln(1.0 + phi_lex(d))
+        // LogScore(d) = gamma * <q, d> + ln(1.0 + phi_lex(d)) + beta * ln(0.2 + 0.8 * Cover(d))
         let mut resonant_candidates: Vec<(String, f64)> = Vec::with_capacity(candidate_map.len());
 
-        for (doc_id, lex_score) in candidate_map {
+        for (doc_id, (lex_score, cover_ratio)) in candidate_map {
             let dot = dense.dot_with_id(&doc_id, query_vec).unwrap_or(0.0f32) as f64;
 
             // 离散概念势能做非线性平滑
             let phi_lex = (lex_score.max(0.0) / 10.0).ln_1p();
-            // 相干能量耦合
-            let log_resonance = self.gamma * dot + phi_lex;
+
+            // 合取覆盖惩罚: ln(0.2 + 0.8 * cover)
+            let penalty = if self.beta > 0.0 {
+                self.beta * (0.2 + 0.8 * cover_ratio).ln()
+            } else {
+                0.0
+            };
+
+            let log_resonance = self.gamma * dot + phi_lex + penalty;
 
             resonant_candidates.push((doc_id, log_resonance));
         }

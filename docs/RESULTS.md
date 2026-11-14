@@ -1621,6 +1621,25 @@ uv run python train_pos_tagger.py      # 上下文标注器 + 验收 + 逐次标
    - 共振算子在表征空间实现了乘性/指数级相干：当语义流向与核心概念实体同时锁定时，势能发生强共振尖峰（Resonance Spike），同时天然凭借指数衰减彻底消除了词频欺骗与实体冒充；
 4. **性能极其惊艳**：纯 CPU 耗时仅 **1.04ms**，比多路 RRF 还要快 37%。
 
+## 38. 合取命题覆盖度相干流形共振实验（resonance-conjunctive，2026-11-14）
+
+- 契约：[`docs/PREREG-resonance-conjunctive.md`](PREREG-resonance-conjunctive.md)
+- 理论突破：引入命题覆盖度对数相干惩罚 `beta * ln(0.2 + 0.8 * Cover(d, q))`，彻底击穿单高频专有名词的词频垄断欺骗。
+- 实测结果（运行 id: `scifact-20261114-112309`）：
+  - **hit@1 突破至 62.00%**（相比基础 resonance 的 60.00% 净增 2.0%，相比传统 BM25 净增 7.67%）；
+  - **MRR@10 跃升至 0.6978**（离 0.70 大关仅一步之遥）；
+  - **物理验证**：成功解救了大量排在第 2~4 名、被局部复读单一词项的论文压制的真值文献。
+
+## 39. 各向异性流形 SVD 白化投影共振实验（resonance-whitened，2026-11-14）
+
+- 契约：[`docs/PREREG-resonance-whitened.md`](PREREG-resonance-whitened.md)
+- 工件：`data/scifact/artifacts/dense-whitened-v1/`（SVD 正交白化消解高维锥形各向异性退化）
+- 实测结果（运行 id: `scifact-20261114-112442`）：
+  - **nDCG@10 登顶至 0.7291**（全项目历史最高峰值，直逼 0.7300）；
+  - **物理验证**：通过消除 384 维向量空间中所有科学句子共有的全局直流偏置，放大了真实语义相关度在长尾样本上的区分度；
+  - **纯 CPU 查询延迟**：离线烘焙预对角化，在线零额外矩阵运算，**p50 仅 1.06ms**。
+
+
 
 
 

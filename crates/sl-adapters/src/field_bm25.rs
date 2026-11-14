@@ -485,6 +485,111 @@ impl FieldBm25Adapter {
 
         Ok(Self::with_factor(factor, beta, Some(sha256)))
     }
+
+    /// 高级检索：在返回 BM25 分数的同时，返回文档对查询词项的覆盖比例 `[0.0, 1.0]`
+    pub fn search_with_coverage(
+        &mut self,
+        query: &str,
+        k: usize,
+    ) -> anyhow::Result<Vec<(String, f64, f64)>> {
+        let query_terms: BTreeSet<String> = bm25_terms(query)
+            .into_iter()
+            .map(|term| self.map(&term))
+            .collect();
+        if query_terms.is_empty() || self.full.is_empty() || k == 0 {
+            return Ok(Vec::new());
+        }
+
+        let num_terms = query_terms.len() as f64;
+        let avg_len = self.full.avg_len();
+        let mut scores: Vec<f64> = vec![0.0; self.full.len()];
+        let mut hit_counts: Vec<u16> = vec![0; self.full.len()];
+
+        // 双层谓词感知索引预过滤
+        let core_filter: Option<std::collections::HashSet<u32>> =
+            if self.tiered_mode && query_terms.len() >= 2 {
+                let mut core_ids = Vec::new();
+                for term in &query_terms {
+                    if let Some(&id) = self.vocabulary.get(term) {
+                        if self.tier1_terms.contains(&id) {
+                            core_ids.push(id);
+                        }
+                    }
+                }
+                if !core_ids.is_empty() {
+                    Some(self.full.candidates(&core_ids).into_iter().collect())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+        let mut touched: Vec<u32> = Vec::new();
+        for term in &query_terms {
+            let Some(&term_id) = self.vocabulary.get(term) else {
+                continue;
+            };
+            let idf = self.full.idf(term_id);
+            if idf <= 0.0 {
+                continue;
+            }
+            let boost = self.weight.boost(term);
+            let occurrences = self.full.occurrences(term_id);
+            let mut cursor = 0usize;
+            while cursor < occurrences.len() {
+                let doc = occurrences[cursor].doc;
+                let start = cursor;
+                while cursor < occurrences.len() && occurrences[cursor].doc == doc {
+                    cursor += 1;
+                }
+
+                if let Some(filter) = &core_filter {
+                    if !filter.contains(&doc) {
+                        continue;
+                    }
+                }
+
+                let tf_full = (cursor - start) as f64;
+                let tf_eff = if boost > 0.0 {
+                    let tf_title = self.title.positions_in(term_id, doc).len() as f64;
+                    tf_full + boost * tf_title
+                } else {
+                    tf_full
+                };
+                let index = doc as usize;
+                if scores[index] == 0.0 {
+                    touched.push(doc);
+                }
+                hit_counts[index] += 1;
+                let denom = tf_eff + K1 * (1.0 - B + B * self.full.doc_len(doc) as f64 / avg_len);
+                let tf_comp = tf_eff * (K1 + 1.0) / denom + self.delta;
+                scores[index] += idf * tf_comp;
+            }
+        }
+
+        let mut ranked: Vec<(u32, f64, f64)> = touched
+            .iter()
+            .filter(|&&doc| scores[doc as usize] > 0.0)
+            .map(|&doc| {
+                let idx = doc as usize;
+                (
+                    doc,
+                    scores[idx],
+                    (hit_counts[idx] as f64 / num_terms).min(1.0),
+                )
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then_with(|| self.full.doc_id(a.0).cmp(self.full.doc_id(b.0)))
+        });
+        ranked.truncate(k);
+        Ok(ranked
+            .into_iter()
+            .map(|(doc, score, cov)| (self.full.doc_id(doc).to_string(), score, cov))
+            .collect())
+    }
 }
 
 /// 工件目录解析：`SL_FIELD_ARTIFACT` > `SL_DATA_DIR`/`SL_DATASET`/artifacts/field-v0。
@@ -558,96 +663,10 @@ impl Adapter for FieldBm25Adapter {
     }
 
     fn search(&mut self, query: &str, k: usize) -> anyhow::Result<Vec<(String, f64)>> {
-        // 先归并概念再打分：两侧必须用同一套归并，否则查询词与文档词表错位。
-        // 归并后同一规范形式的词会合并成一项，这正是「不同形态算同一个词」的定义。
-        let query_terms: BTreeSet<String> = bm25_terms(query)
+        let with_cov = self.search_with_coverage(query, k)?;
+        Ok(with_cov
             .into_iter()
-            .map(|term| self.map(&term))
-            .collect();
-        if query_terms.is_empty() || self.full.is_empty() || k == 0 {
-            return Ok(Vec::new());
-        }
-
-        let avg_len = self.full.avg_len();
-        let mut scores: Vec<f64> = vec![0.0; self.full.len()];
-
-        // 双层谓词感知索引预过滤：优先仅对命中了核心谓词的文档更新打分
-        let core_filter: Option<std::collections::HashSet<u32>> =
-            if self.tiered_mode && query_terms.len() >= 2 {
-                let mut core_ids = Vec::new();
-                for term in &query_terms {
-                    if let Some(&id) = self.vocabulary.get(term) {
-                        if self.tier1_terms.contains(&id) {
-                            core_ids.push(id);
-                        }
-                    }
-                }
-                if !core_ids.is_empty() {
-                    Some(self.full.candidates(&core_ids).into_iter().collect())
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-        // 按查询词项字符串升序累加：与 `bm25` 的累加顺序一致，beta=0 时分数逐位相同。
-        let mut touched: Vec<u32> = Vec::new();
-        for term in &query_terms {
-            let Some(&term_id) = self.vocabulary.get(term) else {
-                continue;
-            };
-            let idf = self.full.idf(term_id);
-            if idf <= 0.0 {
-                continue;
-            }
-            let boost = self.weight.boost(term);
-            // `occurrences` 是逐位置的，按 doc 分组才能得到 tf（同一文档会连续出现）。
-            let occurrences = self.full.occurrences(term_id);
-            let mut cursor = 0usize;
-            while cursor < occurrences.len() {
-                let doc = occurrences[cursor].doc;
-                let start = cursor;
-                while cursor < occurrences.len() && occurrences[cursor].doc == doc {
-                    cursor += 1;
-                }
-
-                if let Some(filter) = &core_filter {
-                    if !filter.contains(&doc) {
-                        continue;
-                    }
-                }
-
-                let tf_full = (cursor - start) as f64;
-                let tf_eff = if boost > 0.0 {
-                    let tf_title = self.title.positions_in(term_id, doc).len() as f64;
-                    tf_full + boost * tf_title
-                } else {
-                    tf_full
-                };
-                let index = doc as usize;
-                if scores[index] == 0.0 {
-                    touched.push(doc);
-                }
-                let denom = tf_eff + K1 * (1.0 - B + B * self.full.doc_len(doc) as f64 / avg_len);
-                let tf_comp = tf_eff * (K1 + 1.0) / denom + self.delta;
-                scores[index] += idf * tf_comp;
-            }
-        }
-
-        let mut ranked: Vec<(u32, f64)> = touched
-            .iter()
-            .filter(|&&doc| scores[doc as usize] > 0.0)
-            .map(|&doc| (doc, scores[doc as usize]))
-            .collect();
-        ranked.sort_by(|a, b| {
-            b.1.total_cmp(&a.1)
-                .then_with(|| self.full.doc_id(a.0).cmp(self.full.doc_id(b.0)))
-        });
-        ranked.truncate(k);
-        Ok(ranked
-            .into_iter()
-            .map(|(doc, score)| (self.full.doc_id(doc).to_string(), score))
+            .map(|(doc, score, _cov)| (doc, score))
             .collect())
     }
 }
