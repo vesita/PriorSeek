@@ -276,3 +276,150 @@ impl Adapter for ResonanceAdapter {
         Ok(resonant_candidates)
     }
 }
+
+/// 谓词论元因果相干流形共振适配器 (Structural Resonance Adapter)
+///
+/// 核心理论：
+/// 解决传统向量内积与词法在因果方向上的结构盲目性（A promotes B vs A inhibits B 余弦高度重合）。
+/// 引入离线提取的因果谓词极性拓扑先验 (+1 诱导 / -1 抑制 / 0 中性)；
+/// 当且仅当文档因果方向与查询命题一致时产生正向共振 (+0.15)，极性矛盾时触发反事实阻尼衰减 (-0.30)。
+pub struct StructuralResonanceAdapter {
+    inner: ResonanceAdapter,
+    doc_polarities: HashMap<String, i8>,
+    query_polarities: HashMap<String, i8>,
+    text_to_qid: HashMap<String, String>,
+}
+
+impl StructuralResonanceAdapter {
+    pub fn new() -> Result<Self> {
+        let mut inner = ResonanceAdapter::whitened()?;
+        inner.info = AdapterInfo::new(
+            "structural-resonance",
+            "structural-resonance",
+            "0.2.0",
+            "PriorSeek 谓词论元因果相干流形共振 (白化流形 + 合取覆盖 + 谓词因果极性相干)",
+        )
+        .with_config(serde_json::json!({
+            "paradigm": "causal_structural_manifold_resonance",
+            "gamma": DEFAULT_GAMMA,
+            "beta": 0.8,
+            "dense_route": "dense-whitened-v1",
+            "predicate_route": "predicate-v1 (+1 induction / -1 suppression)",
+        }));
+
+        let pred_dir = std::path::Path::new("data/scifact/artifacts/predicate-v1");
+        let doc_file = pred_dir.join("doc_polarities.json");
+        let query_file = pred_dir.join("query_polarities.json");
+
+        let doc_polarities: HashMap<String, i8> = if doc_file.is_file() {
+            let bytes = std::fs::read(doc_file)?;
+            serde_json::from_slice(&bytes).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
+        let query_polarities: HashMap<String, i8> = if query_file.is_file() {
+            let bytes = std::fs::read(query_file)?;
+            serde_json::from_slice(&bytes).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
+        let mut text_to_qid = HashMap::new();
+        let queries_file = std::path::Path::new("data/scifact/queries.jsonl");
+        if queries_file.is_file() {
+            if let Ok(content) = std::fs::read_to_string(queries_file) {
+                for line in content.lines() {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let (Some(id), Some(text)) = (val["id"].as_str(), val["text"].as_str()) {
+                            text_to_qid.insert(text.to_string(), id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(Self {
+            inner,
+            doc_polarities,
+            query_polarities,
+            text_to_qid,
+        })
+    }
+}
+
+impl Adapter for StructuralResonanceAdapter {
+    fn info(&self) -> &AdapterInfo {
+        &self.inner.info
+    }
+
+    fn index(&mut self, docs: &[Doc]) -> Result<()> {
+        self.inner.index(docs)
+    }
+
+    fn search(&mut self, query: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+
+        let dense = match self.inner.dense_index.as_ref() {
+            Some(d) => d,
+            None => return self.inner.lexical.search(query, k),
+        };
+
+        let query_vec = match self.inner.query_embeddings.get(query) {
+            Some(v) => v.as_slice(),
+            None => return self.inner.lexical.search(query, k),
+        };
+
+        // 识别查询的因果极性先验
+        let qid = self.text_to_qid.get(query).map(|s| s.as_str()).unwrap_or(query);
+        let q_pol = self.query_polarities.get(qid).copied().unwrap_or(0);
+
+        // 阶段一：激发候选势场池
+        let candidate_pool_size = k.max(60);
+        let lex_candidates = self.inner.lexical.search_with_coverage(query, candidate_pool_size)?;
+        let dense_candidates = dense.search(query_vec, candidate_pool_size);
+
+        let mut candidate_map: HashMap<String, (f64, f64)> =
+            HashMap::with_capacity(candidate_pool_size * 2);
+
+        for (doc_id, score, cover_ratio) in lex_candidates {
+            candidate_map.insert(doc_id, (score, cover_ratio));
+        }
+
+        for (doc_id, _) in dense_candidates {
+            candidate_map.entry(doc_id).or_insert((0.0, 0.2));
+        }
+
+        // 阶段二：相干共振算子推演 + 谓词因果极性相干调制
+        let mut resonant_candidates: Vec<(String, f64)> = Vec::with_capacity(candidate_map.len());
+
+        for (doc_id, (lex_score, cover_ratio)) in candidate_map {
+            let dot = dense.dot_with_id(&doc_id, query_vec).unwrap_or(0.0f32) as f64;
+            let phi_lex = (lex_score.max(0.0) / 10.0).ln_1p();
+            let penalty = (0.2 + 0.8 * cover_ratio).ln();
+
+            // 谓词结构相干增益 / 反事实阻尼相消
+            let d_pol = self.doc_polarities.get(&doc_id).copied().unwrap_or(0);
+            let delta_struct = if q_pol != 0 && d_pol != 0 {
+                if q_pol == d_pol {
+                    0.15 // 同向因果共振
+                } else {
+                    -0.30 // 反事实极性相消
+                }
+            } else {
+                0.0
+            };
+
+            let log_resonance = self.inner.gamma * dot + phi_lex + self.inner.beta * penalty + delta_struct;
+            resonant_candidates.push((doc_id, log_resonance));
+        }
+
+        resonant_candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        resonant_candidates.truncate(k);
+
+        Ok(resonant_candidates)
+    }
+}
+
