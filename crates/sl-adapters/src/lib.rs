@@ -5,6 +5,7 @@
 
 use anyhow::{bail, Result};
 
+mod bilingual_sparse;
 mod bm25;
 mod bm25_llm;
 mod faq;
@@ -22,6 +23,7 @@ mod sparse_route;
 pub mod tokenize;
 pub mod tokenizer_llm;
 
+pub use bilingual_sparse::BilingualSparseAdapter;
 pub use bm25::Bm25Adapter;
 pub use bm25_llm::Bm25LlmAdapter;
 pub use faq::{FaqAdapter, Scheme};
@@ -66,6 +68,7 @@ pub fn names() -> Vec<&'static str> {
         "sparse-route",
         "learned-sparse",
         "neural-hybrid",
+        "bilingual-sparse",
         "neural-topo",
         "flow-match",
         "logic-exec",
@@ -90,6 +93,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "tri-hybrid-rrf" => Box::new(TriHybridRrfAdapter::new()?),
         "learned-sparse" => Box::new(LearnedSparseAdapter::new()?),
         "neural-hybrid" => Box::new(NeuralHybridAdapter::new()?),
+        "bilingual-sparse" => Box::new(BilingualSparseAdapter::new()?),
         "gated-fusion" => Box::new(GatedFusionAdapter::new()?),
         "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
         "bow" => Box::new(ShellAdapter::bow()?),
@@ -149,6 +153,7 @@ mod tests {
                 "sparse-route",
                 "learned-sparse",
                 "neural-hybrid",
+                "bilingual-sparse",
                 "neural-topo",
                 "flow-match",
                 "logic-exec"

@@ -6,6 +6,7 @@
 //! - rrf_fuse: 无超参数倒数秩融合算子
 //! - BowScorer / OacScorer: 词袋与词序覆盖算法
 
+pub mod bilingual;
 pub mod bow;
 pub mod dense;
 pub mod flow_matcher;
@@ -15,6 +16,7 @@ pub mod micro_net;
 pub mod oac;
 pub mod sparse;
 
+pub use bilingual::BilingualLexicon;
 pub use bow::{BowScorer, WeightedTerm};
 pub use dense::{rrf_fuse, DenseIndex};
 pub use flow_matcher::{CostGraph, FlowMatcher};
