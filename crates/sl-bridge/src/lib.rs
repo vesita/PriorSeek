@@ -151,6 +151,18 @@ impl<T> RrfPipeline<T> {
         group_key_fn: impl Fn(&T) -> K,
         overlap_fn: impl Fn(&T, &T) -> bool,
     ) -> Vec<FusedItem<T>> {
+        self.fuse_overlapping_with_merge(group_key_fn, overlap_fn, |_, _| {})
+    }
+
+    /// 空间/区间重叠共振融合（带领域状态合并）：
+    /// 当两路候选发生空间重叠共振时，叠加 RRF 得分、记录归因并调用 `merge_fn(&mut existing, &incoming)`
+    /// 将后入路由的丰富语法或元数据（如 AST 关系、作用域、元变量等）注入到合并项中。
+    pub fn fuse_overlapping_with_merge<K: Hash + Eq>(
+        self,
+        group_key_fn: impl Fn(&T) -> K,
+        overlap_fn: impl Fn(&T, &T) -> bool,
+        merge_fn: impl Fn(&mut T, &T),
+    ) -> Vec<FusedItem<T>> {
         let mut groups: HashMap<K, Vec<FusedItem<T>>> = HashMap::new();
 
         for route in self.routes {
@@ -166,9 +178,10 @@ impl<T> RrfPipeline<T> {
                 let mut matched = false;
                 for existing in group_items.iter_mut() {
                     if overlap_fn(&existing.item, &item) {
-                        // 发生区间重叠共振！叠加得分并记录归因
+                        // 发生区间重叠共振！叠加得分、合并属性并记录归因
                         existing.rrf_score += score_contrib;
                         existing.provenance.push((route.name.clone(), rank));
+                        merge_fn(&mut existing.item, &item);
                         matched = true;
                         break;
                     }
