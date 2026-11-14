@@ -15,6 +15,7 @@
 //! 内核接口只有一处：[`KernelGapTable`] —— 内核只回答「间隔为 g 的相邻匹配值多少分」。
 
 pub mod bow;
+pub mod cpf;
 pub mod dense;
 pub mod flow_matcher;
 pub mod index;
@@ -23,6 +24,7 @@ pub mod micro_net;
 pub mod oac;
 
 pub use bow::{BowScorer, WeightedTerm};
+pub use cpf::{CpfEngine, CpfOperator, DocPotentialField, QueryProbe, QueryProbeSet};
 pub use dense::{rrf_fuse, DenseIndex};
 pub use flow_matcher::{CostGraph, FlowMatcher};
 pub use index::{Occurrence, PositionalIndex, TieredIndex};
