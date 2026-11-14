@@ -423,3 +423,170 @@ impl Adapter for StructuralResonanceAdapter {
     }
 }
 
+const CAUSAL_POS_WORDS: &[&str] = &[
+    "increase", "increases", "increased", "increasing",
+    "promote", "promotes", "promoted", "promoting",
+    "activate", "activates", "activated", "activating", "activation",
+    "upregulate", "upregulates", "upregulated", "upregulation",
+    "enhance", "enhances", "enhanced", "enhancing",
+    "stimulate", "stimulates", "stimulated", "stimulation",
+    "cause", "causes", "caused", "causing",
+    "induce", "induces", "induced", "inducing", "induction",
+    "improve", "improves", "improved", "improving",
+    "accelerate", "accelerates", "accelerated",
+];
+
+const CAUSAL_NEG_WORDS: &[&str] = &[
+    "decrease", "decreases", "decreased", "decreasing",
+    "inhibit", "inhibits", "inhibited", "inhibiting", "inhibition",
+    "suppress", "suppresses", "suppressed", "suppressing", "suppression",
+    "downregulate", "downregulates", "downregulated", "downregulation",
+    "reduce", "reduces", "reduced", "reducing", "reduction",
+    "block", "blocks", "blocked", "blocking",
+    "prevent", "prevents", "prevented", "preventing", "prevention",
+    "attenuate", "attenuates", "attenuated", "attenuating",
+    "impair", "impairs", "impaired", "impairment",
+    "loss", "deplete", "depletes", "depleted", "depletion",
+    "lack", "lacks", "lacked", "lacking",
+];
+
+/// 在线实时因果极性识别器（支持对任意反事实新查询做动态极性感知）
+fn detect_query_polarity(query: &str) -> i8 {
+    let lower = query.to_ascii_lowercase();
+    let mut pos = 0;
+    let mut neg = 0;
+    for word in lower.split(|c: char| !c.is_alphanumeric()) {
+        if CAUSAL_POS_WORDS.contains(&word) {
+            pos += 1;
+        } else if CAUSAL_NEG_WORDS.contains(&word) {
+            neg += 1;
+        }
+    }
+    if pos > neg && pos >= 1 {
+        1
+    } else if neg > pos && neg >= 1 {
+        -1
+    } else {
+        0
+    }
+}
+
+/// 自适应因果相干流形共振检索适配器 (Causal Coherent Adapter)。
+///
+/// 具备双重核心能力：
+/// 1. 正向科学事实极速高精召回（SVD白化流形 + 概念同义 + 合取命题覆盖相干）；
+/// 2. 动态反事实因果防御：对任意传入查询在线推断极性，与离线文档因果先验产生同向共振或反事实强阻尼相消。
+pub struct CausalCoherentAdapter {
+    inner: ResonanceAdapter,
+    doc_polarities: HashMap<String, i8>,
+}
+
+impl CausalCoherentAdapter {
+    pub fn new() -> Result<Self> {
+        let mut inner = ResonanceAdapter::whitened()?;
+        inner.info = AdapterInfo::new(
+            "causal-coherent",
+            "causal-resonance",
+            "0.2.0",
+            "PriorSeek 自适应因果相干流形共振 (白化流形 + 命题覆盖相干 + 实时反事实因果防御)",
+        )
+        .with_config(serde_json::json!({
+            "paradigm": "adaptive_causal_manifold_resonance",
+            "gamma": DEFAULT_GAMMA,
+            "beta": 0.8,
+            "dense_route": "dense-whitened-v1",
+            "causal_defense": "enabled",
+        }));
+
+        let pred_dir = std::path::Path::new("data/scifact/artifacts/predicate-v1");
+        let doc_file = pred_dir.join("doc_polarities.json");
+
+        let doc_polarities: HashMap<String, i8> = if doc_file.is_file() {
+            let bytes = std::fs::read(doc_file)?;
+            serde_json::from_slice(&bytes).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+
+        Ok(Self {
+            inner,
+            doc_polarities,
+        })
+    }
+}
+
+impl Adapter for CausalCoherentAdapter {
+    fn info(&self) -> &AdapterInfo {
+        &self.inner.info
+    }
+
+    fn index(&mut self, docs: &[Doc]) -> Result<()> {
+        self.inner.index(docs)
+    }
+
+    fn search(&mut self, query: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+
+        let dense = match self.inner.dense_index.as_ref() {
+            Some(d) => d,
+            None => return self.inner.lexical.search(query, k),
+        };
+
+        let query_vec = match self.inner.query_embeddings.get(query) {
+            Some(v) => v.as_slice(),
+            None => return self.inner.lexical.search(query, k),
+        };
+
+        // 实时因果极性识别（无需静态 qid 表，对任意反事实新输入完全自适应）
+        let q_pol = detect_query_polarity(query);
+
+        // 阶段一：候选势场池激发
+        let candidate_pool_size = k.max(60);
+        let lex_candidates = self.inner.lexical.search_with_coverage(query, candidate_pool_size)?;
+        let dense_candidates = dense.search(query_vec, candidate_pool_size);
+
+        let mut candidate_map: HashMap<String, (f64, f64)> =
+            HashMap::with_capacity(candidate_pool_size * 2);
+
+        for (doc_id, score, cover_ratio) in lex_candidates {
+            candidate_map.insert(doc_id, (score, cover_ratio));
+        }
+
+        for (doc_id, _) in dense_candidates {
+            candidate_map.entry(doc_id).or_insert((0.0, 0.2));
+        }
+
+        // 阶段二：相干共振算子推演 + 反事实阻尼相消
+        let mut resonant_candidates: Vec<(String, f64)> = Vec::with_capacity(candidate_map.len());
+
+        for (doc_id, (lex_score, cover_ratio)) in candidate_map {
+            let dot = dense.dot_with_id(&doc_id, query_vec).unwrap_or(0.0f32) as f64;
+            let phi_lex = (lex_score.max(0.0) / 10.0).ln_1p();
+            let penalty = (0.2 + 0.8 * cover_ratio).ln();
+
+            // 动态因果相干度：同向共振 +0.20，对立反事实强力阻尼 -0.45
+            let d_pol = self.doc_polarities.get(&doc_id).copied().unwrap_or(0);
+            let delta_causal = if q_pol != 0 && d_pol != 0 {
+                if q_pol == d_pol {
+                    0.20
+                } else {
+                    -0.45
+                }
+            } else {
+                0.0
+            };
+
+            let log_resonance = self.inner.gamma * dot + phi_lex + self.inner.beta * penalty + delta_causal;
+            resonant_candidates.push((doc_id, log_resonance));
+        }
+
+        resonant_candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        resonant_candidates.truncate(k);
+
+        Ok(resonant_candidates)
+    }
+}
+
+
