@@ -11,6 +11,7 @@ pub struct DenseIndex {
     dim: usize,
     /// 连续排布的 L2 归一化浮点数组：大小为 num_docs * dim
     data: Vec<f32>,
+    id_map: HashMap<String, usize>,
 }
 
 impl DenseIndex {
@@ -47,7 +48,17 @@ impl DenseIndex {
             data.push(f32::from_le_bytes(chunk.try_into().unwrap()));
         }
 
-        Ok(Self { doc_ids, dim, data })
+        let mut id_map = HashMap::with_capacity(doc_ids.len());
+        for (idx, id) in doc_ids.iter().enumerate() {
+            id_map.insert(id.clone(), idx);
+        }
+
+        Ok(Self {
+            doc_ids,
+            dim,
+            data,
+            id_map,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -62,6 +73,37 @@ impl DenseIndex {
         self.dim
     }
 
+    /// 根据文档 ID 获取其对应的向量连续内积（若不存在返回 None）
+    pub fn dot_with_id(&self, doc_id: &str, query_vec: &[f32]) -> Option<f32> {
+        let idx = *self.id_map.get(doc_id)?;
+        Some(self.dot_at_index(idx, query_vec))
+    }
+
+    /// 8-way SIMD 展开的高性能单文档点积
+    pub fn dot_at_index(&self, doc_idx: usize, query_vec: &[f32]) -> f32 {
+        let offset = doc_idx * self.dim;
+        let doc_slice = &self.data[offset..offset + self.dim];
+        let mut dot = 0.0f32;
+        let mut i = 0;
+        let dim = self.dim;
+        while i + 7 < dim {
+            dot += query_vec[i] * doc_slice[i]
+                + query_vec[i + 1] * doc_slice[i + 1]
+                + query_vec[i + 2] * doc_slice[i + 2]
+                + query_vec[i + 3] * doc_slice[i + 3]
+                + query_vec[i + 4] * doc_slice[i + 4]
+                + query_vec[i + 5] * doc_slice[i + 5]
+                + query_vec[i + 6] * doc_slice[i + 6]
+                + query_vec[i + 7] * doc_slice[i + 7];
+            i += 8;
+        }
+        while i < dim {
+            dot += query_vec[i] * doc_slice[i];
+            i += 1;
+        }
+        dot
+    }
+
     /// 纯 CPU 紧凑向量点积：利用 8-way SIMD 展开与有界小顶堆 Top-K 截断。
     /// $O(N \log K)$ 时间复杂度，内存零重分配。
     pub fn search(&self, query_vec: &[f32], k: usize) -> Vec<(String, f64)> {
@@ -73,28 +115,7 @@ impl DenseIndex {
         let mut heap = std::collections::BinaryHeap::with_capacity(k + 1);
 
         for doc_idx in 0..self.doc_ids.len() {
-            let offset = doc_idx * self.dim;
-            let doc_slice = &self.data[offset..offset + self.dim];
-
-            // 8-way 循环展开点积
-            let mut dot = 0.0f32;
-            let mut i = 0;
-            let dim = self.dim;
-            while i + 7 < dim {
-                dot += query_vec[i] * doc_slice[i]
-                    + query_vec[i + 1] * doc_slice[i + 1]
-                    + query_vec[i + 2] * doc_slice[i + 2]
-                    + query_vec[i + 3] * doc_slice[i + 3]
-                    + query_vec[i + 4] * doc_slice[i + 4]
-                    + query_vec[i + 5] * doc_slice[i + 5]
-                    + query_vec[i + 6] * doc_slice[i + 6]
-                    + query_vec[i + 7] * doc_slice[i + 7];
-                i += 8;
-            }
-            while i < dim {
-                dot += query_vec[i] * doc_slice[i];
-                i += 1;
-            }
+            let dot = self.dot_at_index(doc_idx, query_vec);
 
             // 维护最小堆
             if heap.len() < k {

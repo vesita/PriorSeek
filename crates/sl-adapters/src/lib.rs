@@ -27,6 +27,7 @@ mod gated_fusion;
 mod hybrid_rrf;
 mod logic_exec;
 mod neural_topo;
+mod resonance;
 mod rs;
 mod seq;
 mod shell;
@@ -45,6 +46,7 @@ pub use hybrid_rrf::{
 };
 pub use logic_exec::LogicExecutionAdapter;
 pub use neural_topo::NeuralTopoAdapter;
+pub use resonance::ResonanceAdapter;
 pub use rs::RelationSearchAdapter;
 pub use seq::SeqAdapter;
 pub use shell::ShellAdapter;
@@ -70,6 +72,7 @@ pub fn names() -> Vec<&'static str> {
         "hybrid-rrf",
         "tri-hybrid-rrf",
         "query-gated-rrf",
+        "resonance",
         "gated-fusion",
         "bm25-llm",
         "bow",
@@ -104,6 +107,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "hybrid-rrf" => Box::new(HybridRrfAdapter::new()?),
         "tri-hybrid-rrf" => Box::new(TriHybridRrfAdapter::new()?),
         "query-gated-rrf" => Box::new(QueryGatedRrfAdapter::new()?),
+        "resonance" => Box::new(ResonanceAdapter::new()?),
         "gated-fusion" => Box::new(GatedFusionAdapter::new()?),
         "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
         "bow" => Box::new(ShellAdapter::bow()?),
@@ -154,6 +158,7 @@ mod tests {
                 "hybrid-rrf",
                 "tri-hybrid-rrf",
                 "query-gated-rrf",
+                "resonance",
                 "gated-fusion",
                 "bm25-llm",
                 "bow",
