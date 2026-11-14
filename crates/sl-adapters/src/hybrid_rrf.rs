@@ -200,3 +200,46 @@ impl Adapter for HybridRrfAdapter {
         self.inner.search(query, k)
     }
 }
+
+/// 三路先验协同检索适配器 (Tri-Route PriorSeek Adapter)。
+/// 融合三条异构先验路：
+/// 1. `concept-synonym`: 领域医学同义与前缀硬对齐先验（解决专业实体形态漂移）；
+/// 2. `dense`: 离线 MiniLM 384 维连续语义流（解决语义改写与抽象表达）；
+/// 3. `saliency-bm25`: 深度网络 Token 显著性门控（抑制泛化停用词噪音）。
+pub struct TriHybridRrfAdapter {
+    inner: sl_bridge::AdapterBridge,
+}
+
+impl TriHybridRrfAdapter {
+    pub fn new() -> Result<Self> {
+        let concept = Box::new(crate::field_bm25::FieldBm25Adapter::from_named_concept(
+            "concept-synonym-v1",
+            "concept-synonym",
+        )?);
+        let dense = Box::new(DenseAdapter::new()?);
+        let saliency = Box::new(crate::shell::ShellAdapter::saliency_bm25()?);
+
+        let inner = sl_bridge::AdapterBridge::with_weighted_routes(
+            "tri-hybrid-rrf",
+            "tri-route-reciprocal-rank-fusion",
+            "PriorSeek 泛型三路先验协同 (concept-synonym:1.0 + dense-v0:1.0 + saliency-bm25:0.5)",
+            vec![(concept, 1.0), (dense, 1.0), (saliency, 0.5)],
+        );
+        Ok(Self { inner })
+    }
+}
+
+impl Adapter for TriHybridRrfAdapter {
+    fn info(&self) -> &AdapterInfo {
+        self.inner.info()
+    }
+
+    fn index(&mut self, docs: &[Doc]) -> Result<()> {
+        self.inner.index(docs)
+    }
+
+    fn search(&mut self, query: &str, k: usize) -> Result<Vec<(String, f64)>> {
+        self.inner.search(query, k)
+    }
+}
+

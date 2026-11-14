@@ -1089,6 +1089,7 @@ name = "sl-bridge"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "serde",
  "serde_json",
  "sl-core",
  "sl-engine",
