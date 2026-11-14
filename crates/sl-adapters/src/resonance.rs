@@ -17,13 +17,13 @@ use std::collections::HashMap;
 pub const DEFAULT_GAMMA: f64 = 3.6;
 
 pub struct ResonanceAdapter {
-    info: AdapterInfo,
-    lexical: crate::field_bm25::FieldBm25Adapter,
-    dense_index: Option<DenseIndex>,
-    query_embeddings: HashMap<String, Vec<f32>>,
-    artifact_dir: std::path::PathBuf,
-    gamma: f64,
-    beta: f64,
+    pub(crate) info: AdapterInfo,
+    pub(crate) lexical: crate::field_bm25::FieldBm25Adapter,
+    pub(crate) dense_index: Option<DenseIndex>,
+    pub(crate) query_embeddings: HashMap<String, Vec<f32>>,
+    pub(crate) artifact_dir: std::path::PathBuf,
+    pub(crate) gamma: f64,
+    pub(crate) beta: f64,
 }
 
 impl ResonanceAdapter {

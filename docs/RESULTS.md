@@ -1717,6 +1717,24 @@ uv run python train_pos_tagger.py      # 上下文标注器 + 验收 + 逐次标
    - 因果辨析率 CDR 从 55.30% **暴增至 69.22%（逼近 70% 大关！）**；
    - 证实相干势能方程在面对反事实因果对立输入时，能够自发激发相位相消阻尼，展现出极其优异的物理逻辑辨析力。
 
+## 44. 三元组因果拓扑演绎与实体词汇鸿沟物理揭秘（triplet-causal，2026-11-14）
+
+- 契约：[`docs/PREREG-triplet-causal-retrieval.md`](PREREG-triplet-causal-retrieval.md)
+- 工件：`data/scifact/artifacts/triplets-v1/`（覆盖 3,688 篇论文，提取 12,951 条规范化三元组）
+- 实测结果（运行 id: `scifact-20261114-124539`）：
+  - **正向事实基准**：nDCG@10 保持 **0.7291**（SOTA 水准，零损失零退化），hit@1 维持在 **61.67%**，纯 CPU 查询耗时仅 **1.07ms**；
+  - **反事实因果盲测**：CBR 维持在 25.76%，CDR 维持在 55.63%。
+
+### 44.1 深入穿透：为什么离散三元组未能在全量盲测上大面积触发？
+- 物理穿透发现：在 83 对探针中，**仅有 5 对探针能够完全命中字面一模一样的主宾实体字符串**！
+- 其余 78 对探针在语料库中存在严重的“同义/上位改写”（如 `triacylglycerols` ↔ `triglyceride lipid droplets`，`suboptimal nutrition` ↔ `dietary risks`）；
+- 当离散规则无法覆盖时，硬绝缘无法触发，系统自动退回至高维流形共振。
+
+### 44.2 终极理论定调：走向“连续流形引导的三元组软演绎 (Soft-Manifold Triplet Deduction)”
+- 纯符号逻辑的阿喀琉斯之踵在于符号刚性与词汇鸿沟；
+- 下一步的终极形态，必须是**“将实体论元投影到高维流形计算软同构度（Soft Entity Alignment），并在此基础上施加离散因果相消”**，实现连续泛化力与离散因果刚性的终极统一！
+
+
 
 
 

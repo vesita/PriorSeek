@@ -32,6 +32,7 @@ mod rs;
 mod seq;
 mod shell;
 mod sparse_route;
+mod triplet_adapter;
 pub mod tokenize;
 pub mod tokenizer_llm;
 pub mod cpf_adapter;
@@ -52,6 +53,7 @@ pub use resonance::{
     StructuralResonanceAdapter,
 };
 pub use cpf_adapter::CpfAdapter;
+pub use triplet_adapter::TripletCausalAdapter;
 pub use rs::RelationSearchAdapter;
 pub use seq::SeqAdapter;
 pub use shell::ShellAdapter;
@@ -84,6 +86,7 @@ pub fn names() -> Vec<&'static str> {
         "causal-coherent",
         "decoupled-resonance",
         "cpf",
+        "triplet-causal",
         "gated-fusion",
         "bm25-llm",
         "bow",
@@ -125,6 +128,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "causal-coherent" => Box::new(CausalCoherentAdapter::new()?),
         "decoupled-resonance" => Box::new(DecoupledResonanceAdapter::new()?),
         "cpf" => Box::new(CpfAdapter::new()?),
+        "triplet-causal" => Box::new(TripletCausalAdapter::new()?),
         "gated-fusion" => Box::new(GatedFusionAdapter::new()?),
         "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
         "bow" => Box::new(ShellAdapter::bow()?),
@@ -182,6 +186,7 @@ mod tests {
                 "causal-coherent",
                 "decoupled-resonance",
                 "cpf",
+                "triplet-causal",
                 "gated-fusion",
                 "bm25-llm",
                 "bow",
