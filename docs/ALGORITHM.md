@@ -134,3 +134,22 @@ SL_OAC_ORDERED=false ./target/release/sl run --dataset scifact --adapters bm25,o
 SL_OAC_GAP_WEIGHTS=1.0,0.8,0.6,0.4,0.2 ./target/release/sl run --dataset scifact --adapters oac --k 100 --warmup 3 --label oac4-decay
 SL_OAC_WINDOW=4 ./target/release/sl run --dataset scifact --adapters oac --k 100 --warmup 3 --label oac4-w4
 ```
+
+## 9. 神经稀疏带权倒排点积算法（`learned-sparse` & `bilingual-sparse`）
+
+### 9.1 数学形式
+传统 BM25 的打分形式依赖启发式饱和曲线与人工超参数：
+```text
+score_BM25(q, d) = Σ_{t ∈ q ∩ d} idf(t) · [ tf · (k1 + 1) / (tf + k1 · (1 - b + b · len_d / avg_len)) ]
+```
+其中 `k1` 和 `b` 是经验常数，无法捕捉未字面出现的近义词。
+
+神经稀疏算法将词项权重预测彻底交给深度学习离线内核：
+```text
+score_Sparse(q, d) = Σ_{t ∈ q ∩ d} w(t, q) · w(t, d)
+```
+- 每个文档词权重 `w(t, d)` 与查询词权重 `w(t, q)` 均由深度学习网络（SPLADE 架构）端到端学得；
+- 模型自动完成了重要度加权、停用词压制、以及未显式出现的上下文同义词扩展；
+- **外壳零超参**：不再包含任何人为设定的调节参数；
+- 外壳纯 Rust 实现带权倒排索引（`SparseInvertedIndex`），结合有界最小堆完成 Top-K 截断，纯 CPU 运行，查询延迟仅为 **26~28 微秒**。
+

@@ -413,3 +413,35 @@ weights.json     学到的 w / b、特征缩放、候选规则、目标与划分
   （`docs/RESULTS.md` §17.4 有实例）；
 - **同义/上下位不在它范围内**：`cancer` 与 `carcinoma` 不是前缀关系，需要 `concept` 的另一种
   实现（本体映射或 embedding 聚类），属于后续里程碑。
+
+## 11. 神经稀疏先验与中英双语解耦扩散（`learned-sparse` & `bilingual-sparse`）
+
+预注册见 [`docs/PREREG-learned-sparse.md`](PREREG-learned-sparse.md) 与 [`docs/PREREG-bilingual-sparse-hub.md`](PREREG-bilingual-sparse-hub.md)，实测记录见 [`docs/RESULTS.md`](RESULTS.md) §36 与 §37。
+
+这是目前 PriorSeek 的核心架构底座，完美贯彻了“内核负责学习并产出先验因子，外壳负责极简组织执行”的第一性原理：
+
+### 11.1 三层物理分离架构
+
+| 层级 | 部件 | 职责 | 实现载体 |
+|---|---|---|---|
+| **概念层** | `BilingualHub` (双语概念映射枢纽) | 负责跨语言概念对齐（如 `cancer <-> 癌症`），严格隔离语法，不承担单语扩散 | `tools/kernel/bilingual_hub.py`<br>`crates/sl-engine/src/bilingual.rs` |
+| **内核层** | `Language-Specific Diffusion Heads` (语系特化扩散头) | 英文走 30k 维英文词表，中文走 32k 维中文词表。同一个词严格在同语系内完成词权加权与上下文语义扩充，杜绝交叉污染 | `naver/splade-cocondenser-ensembledistil`<br>`naver/neuclir22-splade-zh` |
+| **外壳层** | `SparseInvertedIndex` (纯 CPU 带权倒排索引) | 消费离线二进制先验工件 `sparse.bin`，纯 CPU 线性内积：`sum(w_q * w_d)`。**外壳完全零超参** | `crates/sl-engine/src/sparse.rs`<br>`crates/sl-adapters/src/bilingual_sparse.rs` |
+
+### 11.2 先验因子契约与工件格式
+
+- 工件：`data/{dataset}/artifacts/bilingual-sparse-v1/`
+  - `sparse.bin`：小端二进制紧凑倒排向量（魔数 `SLSPARv1` + 文档数 + 词表大小 + 变长词项 `(token_id: u32, weight: f32)`）；
+  - `manifest.json`：符合 `PriorFactor` 封闭规范，声明形状、SHA256、来源模型与训练集，无任何用法字段；
+  - `bilingual_lexicon.json`：双语对齐映射字典。
+
+### 11.3 核心收益与物理归因
+
+1. **外壳零超参**：
+   - 彻底摆脱传统 BM25 经验参数 `k1`、`b`，无需任何人工衰减系数。词语的语法作用、判别力与语义扩展全部由离线神经网络在海量检索任务中学得。
+2. **语系隔离消除语义稀释**：
+   - 英文是屈折语，中文是孤立语。分语言扩散保证了词元在自身语言体系内的上下文自洽性，多语言 Token 映射层则负责跨语言搭桥。
+3. **微秒级极致性能**：
+   - 充分利用倒排索引天然的稀疏剪枝优势，检索时仅扫描有交集的极少数文档项；
+   - 中文查询 p50 延迟 **26 μs (0.026 ms)**，英文查询 p50 延迟 **28 μs (0.028 ms)**，建索引只需数毫秒，内存仅占用几兆字节，完全消除运行时对 GPU/Python 的依赖。
+
