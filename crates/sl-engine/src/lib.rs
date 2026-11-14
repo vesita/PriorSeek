@@ -16,6 +16,7 @@
 
 pub mod bow;
 pub mod cpf;
+pub mod triplet;
 pub mod dense;
 pub mod flow_matcher;
 pub mod index;
@@ -25,6 +26,7 @@ pub mod oac;
 
 pub use bow::{BowScorer, WeightedTerm};
 pub use cpf::{CpfEngine, CpfOperator, DocPotentialField, QueryProbe, QueryProbeSet};
+pub use triplet::{Triplet, TripletIndex};
 pub use dense::{rrf_fuse, DenseIndex};
 pub use flow_matcher::{CostGraph, FlowMatcher};
 pub use index::{Occurrence, PositionalIndex, TieredIndex};
