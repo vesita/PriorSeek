@@ -2,19 +2,6 @@
 //!
 //! 增删适配器只改这一个文件；每个适配器实现 `sl_core::Adapter`，并给出 `AdapterInfo`
 //! 说明自己「是谁、从哪来、带什么参数」。
-//!
-//! 现有 7 个名字：
-//!
-//! | 名字 | 算法 | 实现位置 |
-//! |---|---|---|
-//! | `bm25` | 自实现 Okapi BM25（k1=1.5, b=0.75，字母数字词项 + CJK jieba 分词） | [`bm25`] |
-//! | `faq-char` / `faq-bigram` / `faq-word` / `faq-hybrid` / `faq-bm25` | 中文 FAQ 五方案（移植 faq-search） | [`faq`] |
-//! | `rs` | relation-search（Rust BM25 + ast-grep），子进程接入 | [`rs`] |
-//! | `seq` | token 时序相关度内核（BM25 主体 + 内核工件的时序边权） | [`seq`] |
-//! | `bm25-llm` | 同 BM25 公式，切分换成 **LLM BPE tokenizer**（不自研子词） | [`bm25_llm`] |
-//! | `field-bm25` / `concept-bm25` | 因子消费外壳：字段加权 / 概念归并，两条轴可组合 | [`field_bm25`] |
-//!
-//! 共享的清洗/切分点在 [`tokenize`]；中文语料相关的适用范围写在 [`faq`] 的模块文档里。
 
 use anyhow::{bail, Result};
 
@@ -25,17 +12,15 @@ mod field_bm25;
 mod flow_match;
 mod gated_fusion;
 mod hybrid_rrf;
+mod learned_sparse;
 mod logic_exec;
 mod neural_topo;
-mod resonance;
 mod rs;
 mod seq;
 mod shell;
 mod sparse_route;
-mod triplet_adapter;
 pub mod tokenize;
 pub mod tokenizer_llm;
-pub mod cpf_adapter;
 
 pub use bm25::Bm25Adapter;
 pub use bm25_llm::Bm25LlmAdapter;
@@ -43,17 +28,10 @@ pub use faq::{FaqAdapter, Scheme};
 pub use field_bm25::{FieldBm25Adapter, FieldWeight};
 pub use flow_match::FlowMatchAdapter;
 pub use gated_fusion::GatedFusionAdapter;
-pub use hybrid_rrf::{
-    DenseAdapter, HybridRrfAdapter, QueryGatedRrfAdapter, TriHybridRrfAdapter,
-};
+pub use hybrid_rrf::{DenseAdapter, HybridRrfAdapter, TriHybridRrfAdapter};
+pub use learned_sparse::{LearnedSparseAdapter, NeuralHybridAdapter};
 pub use logic_exec::LogicExecutionAdapter;
 pub use neural_topo::NeuralTopoAdapter;
-pub use resonance::{
-    CausalCoherentAdapter, DecoupledResonanceAdapter, ResonanceAdapter,
-    StructuralResonanceAdapter,
-};
-pub use cpf_adapter::CpfAdapter;
-pub use triplet_adapter::TripletCausalAdapter;
 pub use rs::RelationSearchAdapter;
 pub use seq::SeqAdapter;
 pub use shell::ShellAdapter;
@@ -78,15 +56,6 @@ pub fn names() -> Vec<&'static str> {
         "dense",
         "hybrid-rrf",
         "tri-hybrid-rrf",
-        "query-gated-rrf",
-        "resonance",
-        "resonance-conjunctive",
-        "resonance-whitened",
-        "structural-resonance",
-        "causal-coherent",
-        "decoupled-resonance",
-        "cpf",
-        "triplet-causal",
         "gated-fusion",
         "bm25-llm",
         "bow",
@@ -95,6 +64,8 @@ pub fn names() -> Vec<&'static str> {
         "oac",
         "gated-exp",
         "sparse-route",
+        "learned-sparse",
+        "neural-hybrid",
         "neural-topo",
         "flow-match",
         "logic-exec",
@@ -102,9 +73,6 @@ pub fn names() -> Vec<&'static str> {
 }
 
 /// 按名字构造一个适配器。未知名字必须报错并列出可选名字。
-///
-/// `rs` 会在这里就检查 relation-search 二进制并读取它的 sha256 / 来源 commit：
-/// 外部依赖缺失应该在「构造」时暴露，而不是跑完一整轮只得到空结果。
 pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
     let adapter: Box<dyn sl_core::Adapter> = match name {
         "bm25" => Box::new(Bm25Adapter::new()),
@@ -120,15 +88,8 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "dense" => Box::new(DenseAdapter::new()?),
         "hybrid-rrf" => Box::new(HybridRrfAdapter::new()?),
         "tri-hybrid-rrf" => Box::new(TriHybridRrfAdapter::new()?),
-        "query-gated-rrf" => Box::new(QueryGatedRrfAdapter::new()?),
-        "resonance" => Box::new(ResonanceAdapter::new()?),
-        "resonance-conjunctive" => Box::new(ResonanceAdapter::conjunctive()?),
-        "resonance-whitened" => Box::new(ResonanceAdapter::whitened()?),
-        "structural-resonance" => Box::new(StructuralResonanceAdapter::new()?),
-        "causal-coherent" => Box::new(CausalCoherentAdapter::new()?),
-        "decoupled-resonance" => Box::new(DecoupledResonanceAdapter::new()?),
-        "cpf" => Box::new(CpfAdapter::new()?),
-        "triplet-causal" => Box::new(TripletCausalAdapter::new()?),
+        "learned-sparse" => Box::new(LearnedSparseAdapter::new()?),
+        "neural-hybrid" => Box::new(NeuralHybridAdapter::new()?),
         "gated-fusion" => Box::new(GatedFusionAdapter::new()?),
         "bm25-llm" => Box::new(Bm25LlmAdapter::new()?),
         "bow" => Box::new(ShellAdapter::bow()?),
@@ -178,15 +139,6 @@ mod tests {
                 "dense",
                 "hybrid-rrf",
                 "tri-hybrid-rrf",
-                "query-gated-rrf",
-                "resonance",
-                "resonance-conjunctive",
-                "resonance-whitened",
-                "structural-resonance",
-                "causal-coherent",
-                "decoupled-resonance",
-                "cpf",
-                "triplet-causal",
                 "gated-fusion",
                 "bm25-llm",
                 "bow",
@@ -195,6 +147,8 @@ mod tests {
                 "oac",
                 "gated-exp",
                 "sparse-route",
+                "learned-sparse",
+                "neural-hybrid",
                 "neural-topo",
                 "flow-match",
                 "logic-exec"
