@@ -17,6 +17,41 @@ use sl_engine::{BowScorer, PositionalIndex, WeightedTerm};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// 门控特征：[top1 分数, 首位优势, ln(1+命中数), 查询词数]。
+///
+/// 拟合（`sl fit-gate`）与推理（本适配器）必须用同一份实现，否则特征会漂移。
+pub fn gate_features(hits: &[(String, f64)], query_len: usize) -> [f64; 4] {
+    let top1 = hits.first().map(|(_, score)| *score).unwrap_or(0.0);
+    let kth = hits.get(hits.len().min(10).saturating_sub(1)).map(|(_, s)| *s).unwrap_or(0.0);
+    let margin = if top1 > 0.0 { (top1 - kth) / top1 } else { 0.0 };
+    [
+        top1,
+        margin,
+        (1.0 + hits.len() as f64).ln(),
+        query_len as f64,
+    ]
+}
+
+/// 线性门：标准化的 logistic，系数来自内核（`fit-gate` 产出）。
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GateModel {
+    pub mean: [f64; 4],
+    pub std: [f64; 4],
+    pub weights: [f64; 4],
+    pub intercept: f64,
+}
+
+impl GateModel {
+    pub fn decide(&self, features: [f64; 4]) -> bool {
+        let mut z = self.intercept;
+        for index in 0..4 {
+            let std = if self.std[index].abs() < 1e-9 { 1.0 } else { self.std[index] };
+            z += self.weights[index] * (features[index] - self.mean[index]) / std;
+        }
+        1.0 / (1.0 + (-z).exp()) >= 0.5
+    }
+}
+
 pub struct PrfAdapter {
     info: AdapterInfo,
     index: Option<Arc<PositionalIndex>>,
@@ -28,6 +63,8 @@ pub struct PrfAdapter {
     top_docs: usize,
     exp_terms: usize,
     exp_weight: f64,
+    /// QPP 门：给了就只在门判"该扩展"时做第二轮。
+    gate: Option<GateModel>,
 }
 
 impl PrfAdapter {
@@ -68,6 +105,10 @@ impl PrfAdapter {
             top_docs,
             exp_terms,
             exp_weight,
+            gate: std::env::var("SL_PRF_GATE")
+                .ok()
+                .and_then(|path| std::fs::read(path).ok())
+                .and_then(|payload| serde_json::from_slice(&payload).ok()),
         })
     }
 
@@ -169,6 +210,12 @@ impl Adapter for PrfAdapter {
         let scorer = self.scorer.as_ref().context("prf 未建索引（先调 index）")?;
         let base_hits = scorer.search(&base_terms, self.top_docs.max(k));
 
+        if let Some(gate) = self.gate.as_ref() {
+            let features = gate_features(&base_hits, bm25_terms(query).len());
+            if !gate.decide(features) {
+                return Ok(base_hits.into_iter().take(k).collect());
+            }
+        }
         let expansion = self.expand(query, &base_hits);
         if expansion.is_empty() {
             return Ok(base_hits.into_iter().take(k).collect());

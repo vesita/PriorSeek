@@ -216,7 +216,7 @@ fn dedupe(ranking: &[String]) -> Vec<String> {
     out
 }
 
-fn ndcg_at_k(top: &[String], relevant: &BTreeMap<&str, u32>, k: usize) -> f64 {
+pub fn ndcg_at_k(top: &[String], relevant: &BTreeMap<&str, u32>, k: usize) -> f64 {
     let dcg: f64 = top
         .iter()
         .take(k)

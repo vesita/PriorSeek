@@ -112,7 +112,18 @@ enum Command {
         #[arg(long, default_value = "concept-v0")]
         artifact: String,
     },
-    /// 内核工件：复核某次运行记录的工件哈希（换机器 / 长期归档后确认工件没被换掉）
+    /// 拟合 QPP 门：在 train split 上跑 base 与 PRF 两臂，拟合 4 特征 logistic
+    FitGate {
+        #[arg(long, default_value = "scifact")]
+        dataset: String,
+        /// 召回深度（与检索时一致）
+        #[arg(long, default_value_t = 10)]
+        k: usize,
+        /// 输出的门模型 JSON
+        #[arg(long, default_value = "results/prf-gate.json")]
+        output: PathBuf,
+    },
+    /// 内核工件：复核某次运行记录的工件档案（换机器 / 长期归档后确认工件没被换掉）
     Artifact {
         #[command(subcommand)]
         command: ArtifactCommand,
@@ -182,6 +193,7 @@ fn real_main() -> Result<()> {
             allow_dirty,
         ),
         Command::Report { run_dir } => rerender(&run_dir),
+        Command::FitGate { dataset, k, output } => fit_gate(&dataset, k, &output),
         Command::Probe {
             dataset,
             adapter,
@@ -920,4 +932,137 @@ fn run_concept_eval(
         dump_per_query,
         arms,
     })
+}
+
+/// 拟合 QPP 门：train split 上跑 base 与 PRF 两臂，逐查询算 ΔnDCG，拟合 4 特征 logistic。
+///
+/// 特征来自 **base 臂**（推理时也只依赖首轮结果），标签是"这条查询上 PRF 是否更好"。
+fn fit_gate(dataset: &str, k: usize, output: &Path) -> Result<()> {
+    let dir = std::path::Path::new("data").join(dataset);
+    let loaded = canonical::load_dataset(&dir)?;
+    let docs = loaded.dataset.docs.clone();
+    let train = canonical::load_train_split(&dir)?
+        .ok_or_else(|| anyhow::anyhow!("{dataset} 没有 train split"))?;
+
+    let mut base = sl_adapters::build("bm25")?;
+    let mut prf = sl_adapters::build("prf")?;
+    base.index(&docs)?;
+    prf.index(&docs)?;
+
+    let mut samples: Vec<([f64; 4], bool)> = Vec::new();
+    let mut base_wins = 0usize;
+    let mut prf_wins = 0usize;
+    for query in &train.queries {
+        let relevant: std::collections::BTreeMap<&str, u32> = train
+            .qrels
+            .get(&query.id)
+            .map(|map| {
+                map.iter()
+                    .filter(|(_, rel)| **rel > 0)
+                    .map(|(doc, rel)| (doc.as_str(), *rel))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if relevant.is_empty() {
+            continue;
+        }
+        let base_hits = base.search(&query.text, k.max(10))?;
+        let prf_hits = prf.search(&query.text, k.max(10))?;
+        let base_ranking: Vec<String> = base_hits.iter().map(|(doc, _)| doc.clone()).collect();
+        let prf_ranking: Vec<String> = prf_hits.iter().map(|(doc, _)| doc.clone()).collect();
+        let base_ndcg = sl_core::ndcg_at_k(&base_ranking, &relevant, 10);
+        let prf_ndcg = sl_core::ndcg_at_k(&prf_ranking, &relevant, 10);
+        let features = sl_adapters::prf::gate_features(&base_hits, sl_adapters::tokenize::bm25_terms(&query.text).len());
+        if prf_ndcg > base_ndcg + 1e-9 {
+            prf_wins += 1;
+            samples.push((features, true));
+        } else if base_ndcg > prf_ndcg + 1e-9 {
+            base_wins += 1;
+            samples.push((features, false));
+        }
+    }
+    if samples.len() < 20 {
+        anyhow::bail!("可训练的样本太少（{} 条，需要 ≥20）", samples.len());
+    }
+
+    // 标准化
+    let mut mean = [0.0f64; 4];
+    let mut std = [0.0f64; 4];
+    for (features, _) in &samples {
+        for index in 0..4 {
+            mean[index] += features[index];
+        }
+    }
+    for value in &mut mean {
+        *value /= samples.len() as f64;
+    }
+    for (features, _) in &samples {
+        for index in 0..4 {
+            std[index] += (features[index] - mean[index]).powi(2);
+        }
+    }
+    for value in &mut std {
+        *value = (*value / samples.len() as f64).sqrt().max(1e-9);
+    }
+
+    // logistic + L2，全批量梯度下降
+    let mut weights = [0.0f64; 4];
+    let mut intercept = 0.0f64;
+    let lr = 0.3;
+    let l2 = 0.01;
+    for _ in 0..2000 {
+        let mut grad_w = [0.0f64; 4];
+        let mut grad_b = 0.0f64;
+        for (features, label) in &samples {
+            let mut z = intercept;
+            for index in 0..4 {
+                z += weights[index] * (features[index] - mean[index]) / std[index];
+            }
+            let p = 1.0 / (1.0 + (-z).exp());
+            let error = p - if *label { 1.0 } else { 0.0 };
+            for index in 0..4 {
+                grad_w[index] += error * (features[index] - mean[index]) / std[index];
+            }
+            grad_b += error;
+        }
+        let n = samples.len() as f64;
+        for index in 0..4 {
+            weights[index] -= lr * (grad_w[index] / n + l2 * weights[index]);
+        }
+        intercept -= lr * grad_b / n;
+    }
+
+    // 训练集上的分开程度（不是泛化证据，只用于确认门学到了东西）
+    let mut correct = 0usize;
+    for (features, label) in &samples {
+        let mut z = intercept;
+        for index in 0..4 {
+            z += weights[index] * (features[index] - mean[index]) / std[index];
+        }
+        let predicted = 1.0 / (1.0 + (-z).exp()) >= 0.5;
+        if predicted == *label {
+            correct += 1;
+        }
+    }
+
+    let model = sl_adapters::prf::GateModel {
+        mean,
+        std,
+        weights,
+        intercept,
+    };
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(output, serde_json::to_string_pretty(&model)? + "\n")?;
+    println!(
+        "train 样本 {}（PRF 更好 {} / base 更好 {}），训练集准确率 {:.3}，权重 {:?}，截距 {:.3}",
+        samples.len(),
+        prf_wins,
+        base_wins,
+        correct as f64 / samples.len() as f64,
+        weights,
+        intercept
+    );
+    Ok(())
 }

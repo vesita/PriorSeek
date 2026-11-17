@@ -20,7 +20,7 @@ pub mod types;
 
 pub use adapter::{Adapter, AdapterInfo};
 pub use canonical::{load_train_split, TrainSplit};
-pub use metrics::{evaluate_rankings, Metrics, PerQuery};
+pub use metrics::{evaluate_rankings, ndcg_at_k, Metrics, PerQuery};
 pub use run::{run_dataset, AdapterOutcome, EnvInfo, RunRecord};
 pub use types::{
     Counts, Dataset, Doc, FactorDtype, FactorKind, FileDigest, KernelArtifact, Manifest,
