@@ -64,6 +64,7 @@ pub fn names() -> Vec<&'static str> {
         "bow-plus",
         "saliency-bm25",
         "oac",
+        "sgl",
         "gated-exp",
         "sparse-route",
         "learned-sparse",
@@ -106,6 +107,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         }
         "saliency-bm25" => Box::new(ShellAdapter::saliency_bm25()?),
         "oac" => Box::new(ShellAdapter::oac()?),
+        "sgl" => Box::new(ShellAdapter::sgl()?),
         "gated-exp" => Box::new(ShellAdapter::gated_exp()?),
         "sparse-route" => Box::new(SparseRouteAdapter::new()?),
         "neural-topo" => Box::new(NeuralTopoAdapter::new()?),
@@ -149,6 +151,7 @@ mod tests {
                 "bow-plus",
                 "saliency-bm25",
                 "oac",
+                "sgl",
                 "gated-exp",
                 "sparse-route",
                 "learned-sparse",

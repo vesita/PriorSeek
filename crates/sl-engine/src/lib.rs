@@ -14,6 +14,7 @@ pub mod index;
 pub mod logic_executor;
 pub mod micro_net;
 pub mod oac;
+pub mod sgl;
 pub mod sparse;
 
 pub use bilingual::BilingualLexicon;
@@ -24,4 +25,5 @@ pub use index::{Occurrence, PositionalIndex, TieredIndex};
 pub use logic_executor::{ExecutionExplanation, LogicExecutor, QueryConstraint};
 pub use micro_net::MicroNet;
 pub use oac::{KernelGapTable, OacParams, OacScorer};
+pub use sgl::{SglParams, SglScorer};
 pub use sparse::SparseInvertedIndex;

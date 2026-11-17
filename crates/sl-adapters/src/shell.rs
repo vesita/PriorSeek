@@ -12,7 +12,10 @@ use crate::tokenize::bm25_terms;
 use crate::tokenizer_llm::LlmTokenizer;
 use anyhow::Context;
 use sl_core::{Adapter, AdapterInfo, Doc};
-use sl_engine::{BowScorer, KernelGapTable, OacParams, OacScorer, PositionalIndex, WeightedTerm};
+use sl_engine::{
+    BowScorer, KernelGapTable, OacParams, OacScorer, PositionalIndex, SglParams, SglScorer,
+    WeightedTerm,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -260,6 +263,7 @@ fn sha256_bytes_of(payload: &[u8]) -> String {
 enum Scorer {
     Bow,
     Oac,
+    Sgl,
 }
 
 pub struct ShellAdapter {
@@ -270,7 +274,9 @@ pub struct ShellAdapter {
     index: Option<Arc<PositionalIndex>>,
     bow: Option<BowScorer>,
     oac: Option<OacScorer>,
+    sgl: Option<SglScorer>,
     oac_params: OacParams,
+    sgl_params: SglParams,
     expansion: Option<ExpansionTable>,
     /// `None` = 总是扩展；`Some(τ)` = 只有检索置信度低于 τ（榜首优势不足）时才扩展。
     gate_margin: Option<f64>,
@@ -299,6 +305,7 @@ impl ShellAdapter {
             TokenizerChoice::Qwen => Tokenizer::qwen()?,
         };
         let oac_params = oac_params_from_env()?;
+        let sgl_params = sgl_params_from_env()?;
 
         let mut config = serde_json::json!({
             "tokenizer": choice.name(),
@@ -310,11 +317,19 @@ impl ShellAdapter {
                 serde_json::json!(match scorer_kind {
                     Scorer::Bow => "bow（词袋端点，BM25 数学）",
                     Scorer::Oac => "oac（有序对齐覆盖）",
+                    Scorer::Sgl => "sgl（因子统合：顺序生成似然）",
                 }),
             );
             if scorer_kind == Scorer::Oac {
                 if let Some(oac) = oac_params.to_json().as_object() {
                     for (key, value) in oac {
+                        obj.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            if scorer_kind == Scorer::Sgl {
+                if let Some(sgl) = sgl_params.to_json().as_object() {
+                    for (key, value) in sgl {
                         obj.insert(key.clone(), value.clone());
                     }
                 }
@@ -413,7 +428,9 @@ impl ShellAdapter {
             index: None,
             bow: None,
             oac: None,
+            sgl: None,
             oac_params,
+            sgl_params,
             expansion,
             gate_margin,
             delta,
@@ -485,6 +502,11 @@ impl ShellAdapter {
         Self::build(Scorer::Oac, "oac", "shell-oac")
     }
 
+    /// `sgl`：因子统合打分（顺序生成似然）。
+    pub fn sgl() -> anyhow::Result<Self> {
+        Self::build(Scorer::Sgl, "sgl", "shell-sgl")
+    }
+
     /// `gated-exp`：自适应门控扩展（Token 筛选 + 门控扩展）。
     pub fn gated_exp() -> anyhow::Result<Self> {
         let dir = std::env::var("SL_GATED_EXP_ARTIFACT")
@@ -537,6 +559,36 @@ impl ShellAdapter {
 }
 
 /// 从环境变量读 OAC 参数（消融用）；非法值直接报错。
+fn sgl_params_from_env() -> anyhow::Result<SglParams> {
+    let mut params = SglParams::default();
+
+    if let Ok(raw) = std::env::var("SL_SGL_WINDOW") {
+        let window = raw
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| anyhow::anyhow!("SL_SGL_WINDOW 不是正整数：{raw:?}"))?;
+        if window == 0 {
+            anyhow::bail!("SL_SGL_WINDOW 必须 ≥ 1");
+        }
+        params.window = Some(window);
+    }
+    if let Ok(raw) = std::env::var("SL_SGL_GAP_TERM") {
+        params.gap_term = match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => true,
+            "false" | "0" | "no" => false,
+            other => anyhow::bail!("SL_SGL_GAP_TERM 只接受 true/false，收到 {other:?}"),
+        };
+    }
+    if let Ok(raw) = std::env::var("SL_SGL_TERM_TERM") {
+        params.term_term = match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => true,
+            "false" | "0" | "no" => false,
+            other => anyhow::bail!("SL_SGL_TERM_TERM 只接受 true/false，收到 {other:?}"),
+        };
+    }
+    Ok(params)
+}
+
 fn oac_params_from_env() -> anyhow::Result<OacParams> {
     let mut params = OacParams::default();
 
@@ -647,6 +699,10 @@ impl ShellAdapter {
                 let scorer = self.oac.as_mut().context("oac 未建索引（先调 index）")?;
                 Ok(scorer.search(weighted, k))
             }
+            Scorer::Sgl => {
+                let scorer = self.sgl.as_mut().context("sgl 未建索引（先调 index）")?;
+                Ok(scorer.search(weighted, k))
+            }
         }
     }
 
@@ -715,6 +771,7 @@ impl Adapter for ShellAdapter {
         };
         self.bow = Some(bow);
         self.oac = Some(OacScorer::new(Arc::clone(&index), self.oac_params.clone()));
+        self.sgl = Some(SglScorer::new(Arc::clone(&index), self.sgl_params.clone()));
         self.index = Some(index);
         Ok(())
     }
