@@ -113,6 +113,7 @@ def build_learned_sparse(
     top_k_tokens: int = 128,
     max_length: int = 256,
     doc_limit: int = 0,
+    device_kind: str = "auto",
 ) -> int:
     dataset_dir = data_dir / dataset
     corpus_path = dataset_dir / "corpus.jsonl"
@@ -121,7 +122,9 @@ def build_learned_sparse(
     if not corpus_path.is_file():
         raise SystemExit(f"找不到语料文件 {corpus_path}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cpu" if device_kind == "cpu" else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
     print(f"[*] 运行设备: {device}")
     print(f"[*] 加载神经稀疏内核模型: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -281,6 +284,7 @@ def main() -> int:
     parser.add_argument("--doc-limit", type=int, default=0, help="只编码前 N 篇（0 = 全部，仅用于计时）")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="产因子模型（默认 SPLADE）")
     parser.add_argument("--artifact-id", default=DEFAULT_ARTIFACT_ID, help="工件目录名")
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="推理设备")
     args = parser.parse_args()
 
     return build_learned_sparse(
@@ -292,6 +296,7 @@ def main() -> int:
         doc_limit=args.doc_limit,
         model_name=args.model,
         artifact_id=args.artifact_id,
+        device_kind=args.device,
     )
 
 
