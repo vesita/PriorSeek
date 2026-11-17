@@ -299,6 +299,8 @@ pub struct ShellAdapter {
     lambda_k1: f64,
     /// 概念因子（内核产出）：`token → 规范形式`。建索引与查询走同一张表才可比。
     concept: Option<std::collections::HashMap<String, String>>,
+    /// 扩展触发条件：`true` = 只有查询含 OOV 词（语料里 df=0）时才扩展。
+    expansion_oov_only: bool,
 }
 
 impl std::fmt::Debug for ShellAdapter {
@@ -450,6 +452,9 @@ impl ShellAdapter {
             saliency: None,
             lambda_k1: 0.0,
             concept: None,
+            expansion_oov_only: std::env::var("SL_EXP_OOV_ONLY")
+                .map(|raw| matches!(raw.trim(), "1" | "true" | "yes"))
+                .unwrap_or(false),
         })
     }
 
@@ -772,6 +777,12 @@ impl ShellAdapter {
     /// 扩展表按 **token 字符串** 建（与 tokenizer 无关），所以这里必须拿到字符串；
     /// 只有词级 tokenizer 支持扩展（BPE 的 token 与扩展表的词不在同一空间，暂不支持）。
     fn encode_weighted(&mut self, query: &str) -> Vec<WeightedTerm> {
+        self.encode_weighted_inner(query, false)
+    }
+
+    /// `only_oov = true` 时只对**语料里不存在的词**做扩展：
+    /// 语义是"字面搜不到的词才需要近邻"，而不是给所有词加噪声。
+    fn encode_weighted_inner(&mut self, query: &str, only_oov: bool) -> Vec<WeightedTerm> {
         let concept = self.concept.as_ref();
         match &mut self.tokenizer {
             Tokenizer::Word(dict) => {
@@ -785,6 +796,20 @@ impl ShellAdapter {
                 }
                 if let Some(table) = self.expansion.as_ref() {
                     for term in &terms {
+                        if only_oov {
+                            let known = dict
+                                .get(term)
+                                .map(|id| {
+                                    self.index
+                                        .as_ref()
+                                        .map(|index| index.doc_freq(*id) > 0)
+                                        .unwrap_or(true)
+                                })
+                                .unwrap_or(false);
+                            if known {
+                                continue;
+                            }
+                        }
                         for (neighbor, conf) in table.expansions(term) {
                             // 扩展词必须在索引词表里才有意义；OOV 直接跳过。
                             if let Some(&id) = dict.get(neighbor) {
@@ -855,6 +880,24 @@ impl Adapter for ShellAdapter {
         // 第一阶段：只用原词检索一次（这一步也是"检索置信度"的来源）。
         let base = self.encode_base(query);
         let base_hits = self.score(&base, k)?;
+
+        // 条件触发的扩展：只有查询里出现语料词表没有的词时，才认为"字面搜不到"。
+        if self.expansion_oov_only && self.expansion.is_some() {
+            let has_oov = match self.index.as_ref() {
+                Some(index) => base
+                    .iter()
+                    .any(|(term, _)| index.doc_freq(*term) == 0),
+                None => false,
+            };
+            if !has_oov {
+                return Ok(base_hits);
+            }
+            let weighted = self.encode_weighted_inner(query, true);
+            if weighted.len() == base.len() {
+                return Ok(base_hits);
+            }
+            return self.score(&weighted, k);
+        }
 
         let expand = match (self.expansion.as_ref(), self.gate_margin) {
             (None, _) => false,
