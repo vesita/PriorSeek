@@ -2425,3 +2425,30 @@ cross-encoder（ms-marco-MiniLM-L-6）重排 top-50：
 - `dsh-pod` 的 PriorSeek 依赖已从 `1f1cab9` 升到 `ee8e9e8`，`cargo check` 通过；
 - `relation-search` 使用路径依赖，已用最新 PriorSeek 重建并跑通测试（20 + 2 + 12 项）；
 - 标题字段加权（§60）结论为负，未进入主线。
+
+
+## 62. 接入 dsh-pod：稀疏因子作为记忆召回的影子路径（2026-11-17）
+
+### 62.1 为什么是"影子路径 + 离线工件"
+
+dsh-pod 的服务端没有推理环境（noco 上只有 Rust），而稀疏因子的查询侧权重需要模型。
+因此接入形态定为：
+
+- **离线**：`tools/kernel/build_memory_sparse.py` 用检索训练过的稀疏模型给每条记忆事实打分，
+  产出 `{"<fact-id>": [["<token>", w], ...]}`；
+- **在线**：记忆召回只做 `Σ idf(t)·w(t,d)`（查询侧用候选集 idf），**不跑模型**；
+- **只写 trace**：与既有 OAC 影子路径同一纪律，不参与线上选材。
+
+### 62.2 一个必须记录的近似
+
+模型词表是子词（WordPiece），dsh-pod 的分词是整词/整串。工件生成时把子词权重
+**按字符串匹配投影**到 dsh-pod 的分词空间（整词优先、前缀/续接片段累加）。
+这是有损近似：`--jieba` 模式下整词能对上，按字模式下整词命中会丢失。
+投影规则写在脚本 docstring 里，属于已知代价，不是隐含假设。
+
+### 62.3 落地状态
+
+- `memory-core`：新增 `sparse_prior` 模块（加载/打分/空工件退化）与 `compose` 里的影子排序，
+  `RecallCandidate` 增加 `sparseScore / sparseRank / sparseSelected`（旧 trace 缺字段按 0/None/false 解析）；
+- 环境变量 `DSH_POD_SPARSE_PRIOR` 指向工件即启用，缺失时整条路径退化、不影响线上召回；
+- 测试：memory-core 37 项全过（含工件加载、idf×权重打分、损坏 JSON 拒绝）。
