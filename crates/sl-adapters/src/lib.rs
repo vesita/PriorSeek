@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 mod bilingual_sparse;
 mod bm25;
 mod bm25_llm;
+mod dual_unit;
 mod faq;
 mod field_bm25;
 mod flow_match;
@@ -30,6 +31,7 @@ pub use bm25::Bm25Adapter;
 pub use bm25_llm::Bm25LlmAdapter;
 pub use faq::{FaqAdapter, Scheme};
 pub use field_bm25::{FieldBm25Adapter, FieldWeight};
+pub use dual_unit::DualUnitAdapter;
 pub use flow_match::FlowMatchAdapter;
 pub use gated_fusion::GatedFusionAdapter;
 pub use hybrid_rrf::{DenseAdapter, HybridRrfAdapter, TriHybridRrfAdapter};
@@ -77,6 +79,7 @@ pub fn names() -> Vec<&'static str> {
         "neural-topo",
         "prf",
         "passage",
+        "dual-unit",
         "flow-match",
         "logic-exec",
     ]
@@ -119,6 +122,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "neural-topo" => Box::new(NeuralTopoAdapter::new()?),
         "prf" => Box::new(PrfAdapter::new()?),
         "passage" => Box::new(PassageAdapter::new()?),
+        "dual-unit" => Box::new(DualUnitAdapter::new()?),
         "flow-match" => Box::new(FlowMatchAdapter::new()?),
         "logic-exec" => Box::new(LogicExecutionAdapter::new()?),
         other => match Scheme::from_name(other) {
@@ -168,6 +172,7 @@ mod tests {
                 "neural-topo",
                 "prf",
                 "passage",
+                "dual-unit",
                 "flow-match",
                 "logic-exec"
             ]
