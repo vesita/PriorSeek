@@ -39,7 +39,7 @@ def compute_splade_sparse(
     texts: list[str],
     *,
     device: torch.device,
-    batch_size: int = 32,
+    batch_size: int = 8,
     max_length: int = 256,
     top_k_tokens: int = 128,
     min_weight: float = 0.05,
@@ -107,7 +107,7 @@ def build_learned_sparse(
     dataset: str,
     *,
     data_dir: Path,
-    batch_size: int = 32,
+    batch_size: int = 8,
     top_k_tokens: int = 128,
 ) -> int:
     dataset_dir = data_dir / dataset
