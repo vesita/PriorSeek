@@ -114,6 +114,8 @@ def build_learned_sparse(
     max_length: int = 256,
     doc_limit: int = 0,
     device_kind: str = "auto",
+    title_repeat: int = 1,
+    title_weight: float = 0.0,
 ) -> int:
     dataset_dir = data_dir / dataset
     corpus_path = dataset_dir / "corpus.jsonl"
@@ -137,11 +139,15 @@ def build_learned_sparse(
     # 1. 读取并编码语料库
     doc_ids = []
     doc_texts = []
+    doc_titles = []
+    doc_bodies = []
     with corpus_path.open(encoding="utf-8") as f:
         for line in f:
             if line.strip():
                 d = json.loads(line)
                 doc_ids.append(d["id"])
+                doc_titles.append(d.get("title", "").strip())
+                doc_bodies.append(d.get("text", "").strip())
                 text = (d.get("title", "") + " " + d.get("text", "")).strip()
                 doc_texts.append(text)
 
@@ -149,15 +155,39 @@ def build_learned_sparse(
         doc_ids = doc_ids[:doc_limit]
         doc_texts = doc_texts[:doc_limit]
     print(f"[*] 离线编码语料库 ({len(doc_texts)} 篇文档, max_length={max_length})...")
-    doc_sparse = compute_splade_sparse(
-        model,
-        tokenizer,
-        doc_texts,
-        device=device,
-        batch_size=batch_size,
-        max_length=max_length,
-        top_k_tokens=top_k_tokens,
-    )
+    if title_weight > 0.0:
+        # 分字段编码：标题与正文各自编码，文档向量 = 正文 + λ·标题。
+        # 注意：SPLADE 用 max-pool，单纯重复标题文本**不会**改变权重（已实测无差异），
+        # 必须分开编码再叠加才等价于字段加权。
+        titles = doc_titles
+        bodies = doc_bodies
+        body_sparse = compute_splade_sparse(
+            model, tokenizer, bodies, device=device, batch_size=batch_size,
+            max_length=max_length, top_k_tokens=top_k_tokens,
+        )
+        title_sparse = compute_splade_sparse(
+            model, tokenizer, titles, device=device, batch_size=batch_size,
+            max_length=64, top_k_tokens=top_k_tokens,
+        )
+        doc_sparse = []
+        for body, title in zip(body_sparse, title_sparse):
+            merged = {}
+            for token, weight in body:
+                merged[token] = merged.get(token, 0.0) + weight
+            for token, weight in title:
+                merged[token] = merged.get(token, 0.0) + title_weight * weight
+            items = sorted(merged.items(), key=lambda kv: -kv[1])[:top_k_tokens]
+            doc_sparse.append(sorted(items))
+    else:
+        doc_sparse = compute_splade_sparse(
+            model,
+            tokenizer,
+            doc_texts,
+            device=device,
+            batch_size=batch_size,
+            max_length=max_length,
+            top_k_tokens=top_k_tokens,
+        )
 
     out_dir = dataset_dir / "artifacts" / artifact_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -285,6 +315,8 @@ def main() -> int:
     parser.add_argument("--model", default=DEFAULT_MODEL, help="产因子模型（默认 SPLADE）")
     parser.add_argument("--artifact-id", default=DEFAULT_ARTIFACT_ID, help="工件目录名")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="推理设备")
+    parser.add_argument("--title-repeat", type=int, default=1, help="标题重复次数（1 = 不加权）")
+    parser.add_argument("--title-weight", type=float, default=0.0, help="标题字段权重 λ（>0 时分开编码再叠加）")
     args = parser.parse_args()
 
     return build_learned_sparse(
@@ -297,6 +329,8 @@ def main() -> int:
         model_name=args.model,
         artifact_id=args.artifact_id,
         device_kind=args.device,
+        title_repeat=args.title_repeat,
+        title_weight=args.title_weight,
     )
 
 
