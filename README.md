@@ -103,8 +103,11 @@ cargo build --release
 
 ```bash
 git clone https://www.modelscope.cn/Reasone/priorseek.git /tmp/priorseek-artifacts
+# 仓库内按 artifacts/<数据集>/<工件 id>/ 组织，例如：
+#   artifacts/scifact/learned-sparse-v1/
+#   artifacts/qbqtc/bilingual-sparse-v1/
 mkdir -p data/scifact/artifacts
-cp -r /tmp/priorseek-artifacts/* data/scifact/artifacts/
+cp -r /tmp/priorseek-artifacts/artifacts/scifact/learned-sparse-v1 data/scifact/artifacts/
 ```
 
 ### 3. 单查询探针测试

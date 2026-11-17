@@ -2416,3 +2416,12 @@ cross-encoder（ms-marco-MiniLM-L-6）重排 top-50：
 
 字段先验必须在**模型内部**（训练时按字段建模）或**打分时对同一份联合表示做结构区分**，
 不能在嵌入之后用"重复/拆分/加权"这种事后手段伪造。⇒ 本轮"标题加权"作为优化项**不成立**。
+
+
+## 61. 发布与接入（2026-11-17）
+
+- 稀疏因子工件已发布到魔搭 `Reasone/priorseek`，路径为 `artifacts/<数据集>/<工件 id>/`
+  （scifact / arguana / nq-sub 为 `learned-sparse-v1`，qbqtc 为 `bilingual-sparse-v1`）；
+- `dsh-pod` 的 PriorSeek 依赖已从 `1f1cab9` 升到 `ee8e9e8`，`cargo check` 通过；
+- `relation-search` 使用路径依赖，已用最新 PriorSeek 重建并跑通测试（20 + 2 + 12 项）；
+- 标题字段加权（§60）结论为负，未进入主线。
