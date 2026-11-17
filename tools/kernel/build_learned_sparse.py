@@ -21,8 +21,8 @@ from transformers import AutoModelForMaskedLM, AutoTokenizer
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"
-ARTIFACT_ID = "learned-sparse-v1"
-MODEL_NAME = "naver/splade-cocondenser-ensembledistil"
+DEFAULT_ARTIFACT_ID = "learned-sparse-v1"
+DEFAULT_MODEL = "naver/splade-cocondenser-ensembledistil"
 
 
 def sha256_file(path: Path) -> str:
@@ -107,8 +107,12 @@ def build_learned_sparse(
     dataset: str,
     *,
     data_dir: Path,
+    model_name: str = DEFAULT_MODEL,
+    artifact_id: str = DEFAULT_ARTIFACT_ID,
     batch_size: int = 8,
     top_k_tokens: int = 128,
+    max_length: int = 256,
+    doc_limit: int = 0,
 ) -> int:
     dataset_dir = data_dir / dataset
     corpus_path = dataset_dir / "corpus.jsonl"
@@ -119,9 +123,9 @@ def build_learned_sparse(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[*] 运行设备: {device}")
-    print(f"[*] 加载神经稀疏内核模型: {MODEL_NAME}")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForMaskedLM.from_pretrained(MODEL_NAME).to(device)
+    print(f"[*] 加载神经稀疏内核模型: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForMaskedLM.from_pretrained(model_name).to(device)
     model.eval()
 
     vocab_size = len(tokenizer)
@@ -138,18 +142,21 @@ def build_learned_sparse(
                 text = (d.get("title", "") + " " + d.get("text", "")).strip()
                 doc_texts.append(text)
 
-    print(f"[*] 离线编码语料库 ({len(doc_texts)} 篇文档)...")
+    if doc_limit > 0:
+        doc_ids = doc_ids[:doc_limit]
+        doc_texts = doc_texts[:doc_limit]
+    print(f"[*] 离线编码语料库 ({len(doc_texts)} 篇文档, max_length={max_length})...")
     doc_sparse = compute_splade_sparse(
         model,
         tokenizer,
         doc_texts,
         device=device,
         batch_size=batch_size,
-        max_length=256,
+        max_length=max_length,
         top_k_tokens=top_k_tokens,
     )
 
-    out_dir = dataset_dir / "artifacts" / ARTIFACT_ID
+    out_dir = dataset_dir / "artifacts" / artifact_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 2. 写入小端二进制文件 sparse.bin
@@ -211,9 +218,9 @@ def build_learned_sparse(
     q_sparse_sha = sha256_file(out_dir / "query_sparse.json")
 
     manifest = {
-        "id": ARTIFACT_ID,
+        "id": artifact_id,
         "kind": "learned_sparse_vector",
-        "weights_origin": f"pretrained:{MODEL_NAME}",
+        "weights_origin": f"pretrained:{model_name}",
         "source": f"data/{dataset}/corpus.jsonl",
         "prior_factor": {
             "name": "doc_sparse_vector",
@@ -270,6 +277,10 @@ def main() -> int:
     parser.add_argument("dataset", default="scifact", nargs="?", help="数据集名称 (默认 scifact)")
     parser.add_argument("--batch-size", type=int, default=32, help="推理批大小 (默认 32)")
     parser.add_argument("--top-k-tokens", type=int, default=128, help="每篇文档最大保留 token 数 (默认 128)")
+    parser.add_argument("--max-length", type=int, default=256, help="文档截断长度 (默认 256)")
+    parser.add_argument("--doc-limit", type=int, default=0, help="只编码前 N 篇（0 = 全部，仅用于计时）")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="产因子模型（默认 SPLADE）")
+    parser.add_argument("--artifact-id", default=DEFAULT_ARTIFACT_ID, help="工件目录名")
     args = parser.parse_args()
 
     return build_learned_sparse(
@@ -277,6 +288,10 @@ def main() -> int:
         data_dir=DATA_DIR,
         batch_size=args.batch_size,
         top_k_tokens=args.top_k_tokens,
+        max_length=args.max_length,
+        doc_limit=args.doc_limit,
+        model_name=args.model,
+        artifact_id=args.artifact_id,
     )
 
 
