@@ -11,8 +11,11 @@
 //! （实测：关掉邻近因子时 nDCG@10 = 0.6647，与 bm25 相同）。
 //! **默认 `gap_term = false`**：只启用已过门槛的因子；邻近因子在 scifact 上实测为负收益。
 //!
-//! **实测结论（scifact，300 计分查询）**：邻近因子在 scifact 上是**负收益**
-//! （0.6647 → 0.6474），因此 SGL 目前不进入主线，只作为"因子必须先过门槛"的实验台。
+//! **实测结论（scifact，300 计分查询）**：
+//! - 邻近因子是**负收益**（0.6647 → 0.6474）；DPH 词项因子也是负收益（0.6293）；
+//! - **概念因子（内核产出）是正收益**（0.6647 → 0.6788），外壳公式不变、只换因子；
+//! - 所以 SGL 的默认配置是"BM25 词项因子 + 邻近关"，概念因子走 `SL_SGL_CONCEPT_ARTIFACT`。
+//!
 //! 完整数据见 [`docs/RESULTS.md`](../../../docs/RESULTS.md) §38。
 //!
 //! 三种退化端点（消融用）：
@@ -27,9 +30,30 @@ use crate::bow::WeightedTerm;
 use crate::index::PositionalIndex;
 use std::sync::Arc;
 
+/// 词项因子的实现。默认 `Bm25`（与 `bm25` 适配器逐位一致）；`Dph` 是参数自由的
+/// DFR 随机性模型（Bose-Einstein），不含 k1/b，用来验证"换一个词项因子"能否独立成立。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TermFactor {
+    /// BM25 的对数几率饱和形式（有 k1/b，作为默认与对照）。
+    Bm25,
+    /// DFR 的 DPH：`(f1 + f2) / (f + 0.5)`，f1 为信息量、f2 为 Laplacian 修正，无自由参数。
+    Dph,
+}
+
+impl TermFactor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bm25 => "bm25",
+            Self::Dph => "dph",
+        }
+    }
+}
+
 /// SGL 的结构参数。只有"允许跨多远"这一个旋钮，且它是结构约束不是打分权重。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SglParams {
+    /// 词项因子实现（默认 BM25 形式；DPH 无自由参数）。
+    pub term_factor: TermFactor,
     /// 两个相邻命中之间允许的最大位置间隔；`None` = 不截断（默认）。
     pub window: Option<u32>,
     /// 是否计入间距证据（关掉 = 词项证据覆盖）。
@@ -41,6 +65,7 @@ pub struct SglParams {
 impl Default for SglParams {
     fn default() -> Self {
         Self {
+            term_factor: TermFactor::Bm25,
             window: None,
             // 默认只启用**已过门槛**的因子：词项因子（与 bm25 逐位一致）。
             // 邻近因子在 scifact 上是负收益（0.6647 → 0.6474），默认关闭；
@@ -54,6 +79,7 @@ impl Default for SglParams {
 impl SglParams {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
+            "term_factor": self.term_factor.as_str(),
             "window": self.window,
             "gap_term": self.gap_term,
             "term_term": self.term_term,
@@ -177,6 +203,35 @@ impl SglScorer {
     /// 所以默认因子沿用 BM25 的 term weight —— 它本来就是"文档内出现"相对"随机文档"的
     /// 对数几率的一种饱和形式；接了内核之后，这一项整体换成内核产出的词权表即可。
     fn log_evidence(&self, term: u32, doc: u32, len: usize) -> f64 {
+        match self.params.term_factor {
+            TermFactor::Bm25 => self.bm25_evidence(term, doc, len),
+            TermFactor::Dph => self.dph_evidence(term, doc, len),
+        }
+    }
+
+    /// DFR 的 DPH（Amati 2006）：参数自由，只有 f、dl、avg_dl、N、F 五个统计量。
+    ///
+    /// `f1 = f·ln(1 + (avg_dl/dl)·(N/F))`（信息量），`f2 = ½·ln(2π f (1 − f/dl))`（Laplacian），
+    /// `score = (f1 + f2) / (f + 0.5)`。用自然对数，与邻近因子同为 nats。
+    fn dph_evidence(&self, term: u32, doc: u32, len: usize) -> f64 {
+        let f = self.index.positions_in(term, doc).len() as f64;
+        if f <= 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        let dl = len as f64;
+        let n = self.index.len() as f64;
+        let collection_f = self.index.occurrences(term).len() as f64;
+        if n <= 0.0 || collection_f <= 0.0 || dl <= 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        let avg = self.index.avg_len().max(1.0);
+        let f1 = f * (1.0 + (avg / dl) * (n / collection_f)).ln();
+        let tail = (1.0 - f / dl).max(1e-9);
+        let f2 = 0.5 * (2.0 * std::f64::consts::PI * f * tail).ln();
+        (f1 + f2) / (f + 0.5)
+    }
+
+    fn bm25_evidence(&self, term: u32, doc: u32, len: usize) -> f64 {
         let tf = self.index.positions_in(term, doc).len() as f64;
         if tf <= 0.0 {
             return f64::NEG_INFINITY;

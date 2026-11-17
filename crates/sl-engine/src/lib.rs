@@ -25,5 +25,5 @@ pub use index::{Occurrence, PositionalIndex, TieredIndex};
 pub use logic_executor::{ExecutionExplanation, LogicExecutor, QueryConstraint};
 pub use micro_net::MicroNet;
 pub use oac::{KernelGapTable, OacParams, OacScorer};
-pub use sgl::{SglParams, SglScorer};
+pub use sgl::{SglParams, SglScorer, TermFactor};
 pub use sparse::SparseInvertedIndex;

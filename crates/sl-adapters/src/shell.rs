@@ -14,7 +14,7 @@ use anyhow::Context;
 use sl_core::{Adapter, AdapterInfo, Doc};
 use sl_engine::{
     BowScorer, KernelGapTable, OacParams, OacScorer, PositionalIndex, SglParams, SglScorer,
-    WeightedTerm,
+    TermFactor, WeightedTerm,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -251,6 +251,17 @@ impl SaliencyTable {
     }
 }
 
+/// 应用概念因子：把 token 归一成规范形式（没有因子时原样返回）。
+fn canonical_of(
+    concept: Option<&std::collections::HashMap<String, String>>,
+    token: &str,
+) -> String {
+    match concept.and_then(|map| map.get(token)) {
+        Some(canonical) => canonical.clone(),
+        None => token.to_string(),
+    }
+}
+
 fn sha256_bytes_of(payload: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -286,6 +297,8 @@ pub struct ShellAdapter {
     saliency: Option<SaliencyTable>,
     /// 动态饱和度调节强度 lambda。
     lambda_k1: f64,
+    /// 概念因子（内核产出）：`token → 规范形式`。建索引与查询走同一张表才可比。
+    concept: Option<std::collections::HashMap<String, String>>,
 }
 
 impl std::fmt::Debug for ShellAdapter {
@@ -436,6 +449,7 @@ impl ShellAdapter {
             delta,
             saliency: None,
             lambda_k1: 0.0,
+            concept: None,
         })
     }
 
@@ -503,9 +517,47 @@ impl ShellAdapter {
     }
 
     /// `sgl`：因子统合打分（顺序生成似然）。
+    ///
+    /// 概念因子是可选槽位：给了 `SL_SGL_CONCEPT_ARTIFACT`（`concepts.json`），
+    /// 建索引与查询都把 token 映射到规范形式，词项因子在同一身份空间里计算。
     pub fn sgl() -> anyhow::Result<Self> {
-        Self::build(Scorer::Sgl, "sgl", "shell-sgl")
+        let mut adapter = Self::build(Scorer::Sgl, "sgl", "shell-sgl")?;
+        if let Ok(dir) = std::env::var("SL_SGL_CONCEPT_ARTIFACT") {
+            let path = std::path::Path::new(&dir).join("concepts.json");
+            let payload = std::fs::read(&path)
+                .with_context(|| format!("读取概念因子 {} 失败", path.display()))?;
+            let parsed: serde_json::Value = serde_json::from_slice(&payload)
+                .with_context(|| format!("解析 {} 失败", path.display()))?;
+            let mut map = std::collections::HashMap::new();
+            if let Some(entries) = parsed.get("entries").and_then(|v| v.as_object()) {
+                for (token, rows) in entries {
+                    if let Some(canonical) = rows
+                        .as_array()
+                        .and_then(|rows| rows.first())
+                        .and_then(|row| row.as_array())
+                        .and_then(|row| row.first())
+                        .and_then(|value| value.as_str())
+                    {
+                        map.insert(token.clone(), canonical.to_string());
+                    }
+                }
+            }
+            if let Some(config) = adapter.info.config.as_object_mut() {
+                config.insert(
+                    "prior_factor_concept".into(),
+                    serde_json::json!({
+                        "name": "token_concept",
+                        "kind": "concept",
+                        "entries": map.len(),
+                    }),
+                );
+            }
+            adapter.concept = Some(map);
+        }
+        Ok(adapter)
     }
+
+
 
     /// `gated-exp`：自适应门控扩展（Token 筛选 + 门控扩展）。
     pub fn gated_exp() -> anyhow::Result<Self> {
@@ -571,6 +623,13 @@ fn sgl_params_from_env() -> anyhow::Result<SglParams> {
             anyhow::bail!("SL_SGL_WINDOW 必须 ≥ 1");
         }
         params.window = Some(window);
+    }
+    if let Ok(raw) = std::env::var("SL_SGL_TERM_FACTOR") {
+        params.term_factor = match raw.trim().to_ascii_lowercase().as_str() {
+            "bm25" => TermFactor::Bm25,
+            "dph" => TermFactor::Dph,
+            other => anyhow::bail!("SL_SGL_TERM_FACTOR 只接受 bm25 / dph，收到 {other:?}"),
+        };
     }
     if let Ok(raw) = std::env::var("SL_SGL_GAP_TERM") {
         params.gap_term = match raw.trim().to_ascii_lowercase().as_str() {
@@ -672,12 +731,14 @@ fn confident(hits: &[(String, f64)], tau: f64) -> bool {
 impl ShellAdapter {
     /// 只用原词打一次分（第一阶段）。
     fn encode_base(&mut self, query: &str) -> Vec<WeightedTerm> {
+        let concept = self.concept.as_ref();
         match &mut self.tokenizer {
             Tokenizer::Word(dict) => bm25_terms(query)
                 .into_iter()
                 .map(|term| {
+                    let canonical = canonical_of(concept, &term);
                     let next = dict.len() as u32;
-                    let id = *dict.entry(term).or_insert(next);
+                    let id = *dict.entry(canonical).or_insert(next);
                     (id, 1.0)
                 })
                 .collect(),
@@ -711,13 +772,15 @@ impl ShellAdapter {
     /// 扩展表按 **token 字符串** 建（与 tokenizer 无关），所以这里必须拿到字符串；
     /// 只有词级 tokenizer 支持扩展（BPE 的 token 与扩展表的词不在同一空间，暂不支持）。
     fn encode_weighted(&mut self, query: &str) -> Vec<WeightedTerm> {
+        let concept = self.concept.as_ref();
         match &mut self.tokenizer {
             Tokenizer::Word(dict) => {
                 let terms = bm25_terms(query);
                 let mut weighted: Vec<WeightedTerm> = Vec::with_capacity(terms.len() * 2);
                 for term in &terms {
+                    let canonical = canonical_of(concept, term);
                     let next = dict.len() as u32;
-                    let id = *dict.entry(term.clone()).or_insert(next);
+                    let id = *dict.entry(canonical).or_insert(next);
                     weighted.push((id, 1.0));
                 }
                 if let Some(table) = self.expansion.as_ref() {
@@ -751,8 +814,20 @@ impl Adapter for ShellAdapter {
     fn index(&mut self, docs: &[Doc]) -> anyhow::Result<()> {
         // 切分一次、建索引一次，所有打分器共享同一份（Arc）：换算法不重建索引。
         let mut encoded: Vec<(String, Vec<u32>)> = Vec::with_capacity(docs.len());
+        let concept = self.concept.clone();
         for doc in docs {
-            encoded.push((doc.id.clone(), self.tokenizer.encode(&doc.full_text())));
+            let ids = match &mut self.tokenizer {
+                Tokenizer::Word(dict) => bm25_terms(&doc.full_text())
+                    .into_iter()
+                    .map(|term| {
+                        let canonical = canonical_of(concept.as_ref(), &term);
+                        let next = dict.len() as u32;
+                        *dict.entry(canonical).or_insert(next)
+                    })
+                    .collect(),
+                Tokenizer::Qwen(tok) => tok.encode_ids(&doc.full_text()),
+            };
+            encoded.push((doc.id.clone(), ids));
         }
         let index = Arc::new(PositionalIndex::build(encoded));
         let bow = match &self.saliency {
