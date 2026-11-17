@@ -346,6 +346,8 @@ mod tests {
         assert_eq!(m.mrr, 1.0);
         assert_eq!(m.ndcg, 1.0);
         assert_eq!(m.map, 1.0);
+        assert_eq!(m.precision[&10], 0.1);
+        assert!(close(m.f1[&10], 2.0 * 0.1 * 1.0 / 1.1));
         assert_eq!(per[0].first_rel_rank, Some(1));
     }
 
@@ -359,6 +361,9 @@ mod tests {
         // DCG = 1/log2(3)，IDCG = 1
         assert!(close(m.ndcg, 1.0 / 3f64.log2()));
         assert!(close(m.map, 0.5));
+        // 正例在第 2 名：P@10 = 0.1，R@10 = 1，F1 = 2·0.1·1/1.1
+        assert!(close(m.precision[&10], 0.1));
+        assert!(close(m.f1[&10], 2.0 * 0.1 * 1.0 / 1.1));
     }
 
     #[test]
