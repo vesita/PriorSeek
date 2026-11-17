@@ -44,7 +44,7 @@ pub fn render_markdown(record: &RunRecord) -> String {
     for k in &ks {
         out.push_str(&format!(" R@{k} |"));
     }
-    out.push_str(" MRR | nDCG | MAP | 索引 ms | 查询 p50 ms | 查询 p95 ms |\n");
+    out.push_str(" MRR | nDCG | MAP | F1@10 | 索引 ms | 查询 p50 ms | 查询 p95 ms |\n");
     out.push_str("|---:|---|---|");
     for _ in &ks {
         out.push_str("---:|");
@@ -65,10 +65,11 @@ pub fn render_markdown(record: &RunRecord) -> String {
             ));
         }
         out.push_str(&format!(
-            " {:.4} | {:.4} | {:.4} | {:.1} | {:.3} | {:.3} |\n",
+            " {:.4} | {:.4} | {:.4} | {:.4} | {:.1} | {:.3} | {:.3} |\n",
             adapter.metrics.mrr,
             adapter.metrics.ndcg,
             adapter.metrics.map,
+            adapter.metrics.f1.get(&10).copied().unwrap_or(f64::NAN),
             adapter.index_ms,
             adapter.latency_ms_p50,
             adapter.latency_ms_p95,

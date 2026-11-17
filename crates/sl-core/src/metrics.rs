@@ -28,6 +28,11 @@ pub struct Metrics {
     /// 查询命中率 `hit@k`：该查询的 top-k 里**至少有一条**相关文档的查询占比。
     /// 缺失率 `miss@k = 1 − hit@k` —— 这是「用户搜一次能不能找到东西」的业务口径。
     pub hit: BTreeMap<usize, f64>,
+    /// 精确率 `P@k = |相关 ∩ top-k| / k`（宏平均；分母固定为 k）。
+    pub precision: BTreeMap<usize, f64>,
+    /// `F1@k = 2PR/(P+R)`（宏平均）。判定集稀疏时它的上限是 `2|R|/(k+|R|)`，
+    /// 因此跨数据集比较 F1 时**必须同时报 |R| 的均值**。
+    pub f1: BTreeMap<usize, f64>,
     pub mrr_at: usize,
     pub mrr: f64,
     pub ndcg_at: usize,
@@ -49,6 +54,8 @@ pub struct PerQuery {
     pub ndcg: f64,
     pub ap: f64,
     pub recall: BTreeMap<usize, f64>,
+    pub precision: BTreeMap<usize, f64>,
+    pub f1: BTreeMap<usize, f64>,
     /// 前 `max_k` 名里命中的相关文档数。
     pub hits: usize,
 }
@@ -76,6 +83,8 @@ pub fn evaluate_rankings(
 
     let mut recall_sums: BTreeMap<usize, f64> = recall_ks.iter().map(|rk| (*rk, 0.0)).collect();
     let mut hit_sums: BTreeMap<usize, f64> = recall_ks.iter().map(|rk| (*rk, 0.0)).collect();
+    let mut precision_sums: BTreeMap<usize, f64> = recall_ks.iter().map(|rk| (*rk, 0.0)).collect();
+    let mut f1_sums: BTreeMap<usize, f64> = recall_ks.iter().map(|rk| (*rk, 0.0)).collect();
     let mut mrr_sum = 0.0;
     let mut ndcg_sum = 0.0;
     let mut ap_sum = 0.0;
@@ -117,6 +126,14 @@ pub fn evaluate_rankings(
                 .count();
             let value = seen as f64 / relevant.len() as f64;
             *recall_sums.get_mut(rk).expect("recall k 已初始化") += value;
+            let precision = seen as f64 / *rk as f64;
+            *precision_sums.get_mut(rk).expect("precision k 已初始化") += precision;
+            let f1 = if precision + value > 0.0 {
+                2.0 * precision * value / (precision + value)
+            } else {
+                0.0
+            };
+            *f1_sums.get_mut(rk).expect("f1 k 已初始化") += f1;
             // 命中率只看「有没有至少一条」，与 recall 的分母无关。
             *hit_sums.get_mut(rk).expect("hit k 已初始化") += if seen > 0 { 1.0 } else { 0.0 };
         }
@@ -144,6 +161,25 @@ pub fn evaluate_rankings(
                 (*rk, seen as f64 / relevant.len() as f64)
             })
             .collect();
+        let query_precision: BTreeMap<usize, f64> = recall_ks
+            .iter()
+            .map(|rk| {
+                let seen = top
+                    .iter()
+                    .take(*rk)
+                    .filter(|d| relevant.contains_key(d.as_str()))
+                    .count();
+                (*rk, seen as f64 / *rk as f64)
+            })
+            .collect();
+        let query_f1: BTreeMap<usize, f64> = recall_ks
+            .iter()
+            .map(|rk| {
+                let p = query_precision.get(rk).copied().unwrap_or(0.0);
+                let r = query_recall.get(rk).copied().unwrap_or(0.0);
+                (*rk, if p + r > 0.0 { 2.0 * p * r / (p + r) } else { 0.0 })
+            })
+            .collect();
 
         per_query.push(PerQuery {
             qid: qid.clone(),
@@ -151,6 +187,8 @@ pub fn evaluate_rankings(
             ndcg,
             ap,
             recall: query_recall,
+            precision: query_precision,
+            f1: query_f1,
             hits,
         });
     }
@@ -178,6 +216,14 @@ pub fn evaluate_rankings(
         } else {
             ap_sum / scored as f64
         },
+        precision: precision_sums
+            .into_iter()
+            .map(|(k, sum)| (k, if scored > 0 { sum / scored as f64 } else { 0.0 }))
+            .collect(),
+        f1: f1_sums
+            .into_iter()
+            .map(|(k, sum)| (k, if scored > 0 { sum / scored as f64 } else { 0.0 }))
+            .collect(),
         queries_scored: scored,
         queries_skipped: skipped,
     };
