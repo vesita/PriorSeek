@@ -16,6 +16,7 @@ mod hybrid_rrf;
 mod learned_sparse;
 mod logic_exec;
 mod neural_topo;
+mod passage;
 pub mod prf;
 mod rs;
 mod seq;
@@ -35,6 +36,7 @@ pub use hybrid_rrf::{DenseAdapter, HybridRrfAdapter, TriHybridRrfAdapter};
 pub use learned_sparse::{LearnedSparseAdapter, NeuralHybridAdapter};
 pub use logic_exec::LogicExecutionAdapter;
 pub use neural_topo::NeuralTopoAdapter;
+pub use passage::PassageAdapter;
 pub use prf::{GateModel, PrfAdapter};
 pub use rs::RelationSearchAdapter;
 pub use seq::SeqAdapter;
@@ -74,6 +76,7 @@ pub fn names() -> Vec<&'static str> {
         "bilingual-sparse",
         "neural-topo",
         "prf",
+        "passage",
         "flow-match",
         "logic-exec",
     ]
@@ -115,6 +118,7 @@ pub fn build(name: &str) -> Result<Box<dyn sl_core::Adapter>> {
         "sparse-route" => Box::new(SparseRouteAdapter::new()?),
         "neural-topo" => Box::new(NeuralTopoAdapter::new()?),
         "prf" => Box::new(PrfAdapter::new()?),
+        "passage" => Box::new(PassageAdapter::new()?),
         "flow-match" => Box::new(FlowMatchAdapter::new()?),
         "logic-exec" => Box::new(LogicExecutionAdapter::new()?),
         other => match Scheme::from_name(other) {
@@ -163,6 +167,7 @@ mod tests {
                 "bilingual-sparse",
                 "neural-topo",
                 "prf",
+                "passage",
                 "flow-match",
                 "logic-exec"
             ]
