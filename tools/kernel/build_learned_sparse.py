@@ -43,6 +43,7 @@ def compute_splade_sparse(
     max_length: int = 256,
     top_k_tokens: int = 128,
     min_weight: float = 0.05,
+    doc_transform: str = "none",
 ) -> list[list[tuple[int, float]]]:
     """批量计算文本的 SPLADE 稀疏词权向量。
     
@@ -80,11 +81,15 @@ def compute_splade_sparse(
         doc_reps_cpu = doc_reps.cpu().numpy()
         for row in doc_reps_cpu:
             # 找到非零索引
+            if doc_transform == "sqrt":
+                row = np.sqrt(row)
+            elif doc_transform == "log1p":
+                row = np.log1p(row)
             nz_indices = np.where(row >= min_weight)[0]
             if len(nz_indices) == 0:
                 results.append([])
                 continue
-            
+
             nz_weights = row[nz_indices]
             # 如果超过 top_k_tokens，取最大的 top_k_tokens
             if len(nz_indices) > top_k_tokens:
@@ -116,6 +121,7 @@ def build_learned_sparse(
     device_kind: str = "auto",
     title_repeat: int = 1,
     title_weight: float = 0.0,
+    doc_transform: str = "none",
 ) -> int:
     dataset_dir = data_dir / dataset
     corpus_path = dataset_dir / "corpus.jsonl"
@@ -187,6 +193,7 @@ def build_learned_sparse(
             batch_size=batch_size,
             max_length=max_length,
             top_k_tokens=top_k_tokens,
+            doc_transform=doc_transform,
         )
 
     out_dir = dataset_dir / "artifacts" / artifact_id
@@ -317,6 +324,12 @@ def main() -> int:
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="推理设备")
     parser.add_argument("--title-repeat", type=int, default=1, help="标题重复次数（1 = 不加权）")
     parser.add_argument("--title-weight", type=float, default=0.0, help="标题字段权重 λ（>0 时分开编码再叠加）")
+    parser.add_argument(
+        "--doc-transform",
+        default="none",
+        choices=["none", "sqrt", "log1p"],
+        help="文档侧权重变换（决定高权重词项的压制程度）",
+    )
     args = parser.parse_args()
 
     return build_learned_sparse(
@@ -331,6 +344,7 @@ def main() -> int:
         device_kind=args.device,
         title_repeat=args.title_repeat,
         title_weight=args.title_weight,
+        doc_transform=args.doc_transform,
     )
 
 
